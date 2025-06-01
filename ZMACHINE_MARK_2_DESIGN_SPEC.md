@@ -531,42 +531,61 @@ Each opcode will be defined using the following structure:
 #### b. `jz` (1OP)
 
 *   **`Mnemonic`**: `jz`
-*   **`Opcode Value`**: `0x0181` (Example)
+*   **`Opcode Value`**: `0x0180`
 *   **`Form`**: `1OP`
-*   **`Operand Types`**: `value (Small Constant/Variable)`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: 1 byte indicating the type of `value`.
+        *   `0x00`: Large Constant (LC) - 8 bytes follow for `value`.
+        *   `0x01`: Small Constant (SC) - 1 byte follows for `value`.
+        *   `0x02`: Variable (VAR) - 1 byte follows (specifies stack/local/global for `value`).
+    *   `value (LC/SC/VAR)`: The value to be tested.
 *   **`Description`**: Jump if value is zero.
 *   **`Operation Details`**:
-    1.  Reads the `value` operand. If it's a Small Constant, it's used directly. If it's a Variable, its content is read.
-    2.  If the (read) `value` is equal to 0, a branch is performed.
-    3.  If the value is not 0, execution continues with the instruction immediately following the branch data.
+    1.  Reads the `type_byte` following the opcode.
+    2.  Based on `type_byte`, reads the `value` operand:
+        *   If LC, reads 8 bytes.
+        *   If SC, reads 1 byte and zero-extends to 64 bits.
+        *   If VAR, reads 1 byte variable specifier, then fetches the 64-bit value from that variable.
+    3.  If the fetched `value` is equal to 0, a branch is performed.
+    4.  If the `value` is not 0, execution continues with the instruction immediately following the branch data.
 *   **`Stores Result To`**: Does not store a result.
 *   **`Branches If`**: `value == 0`.
-    *   The branch information follows the opcode and its `value` operand.
+    *   The branch information follows the opcode, `type_byte`, and `value` operand.
     *   It consists of a single byte. Bit 7 determines if the branch is "on true" (1) or "on false" (0) - for `jz` this implies the condition itself determines if we branch. Bit 6 determines if the offset is 1 or 2 bytes. Bits 0-5 of this byte contain the top 6 bits of the offset.
     *   If bit 6 is 0, the next byte contains the lower 8 bits of the offset, forming a 14-bit signed offset (`((byte1 & 0x3F) << 8) | byte2`).
     *   If bit 6 is 1, the offset is implicitly short and the jump is to fixed locations (details TBD, or this form is simplified to always use 14-bit offset).
     *   For this example, let's assume a common Z-Machine branch: a 14-bit signed offset. The offset is calculated from the address *after* the branch data itself. A branch to offset 0 means "return false from current routine", offset 1 means "return true from current routine". Other values are added to PC.
 *   **`Side Effects`**: PC may be modified.
-*   **`Error Conditions`**: Invalid variable reference if `value` specifies an invalid variable.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` (not 0x00, 0x01, or 0x02).
+    *   Invalid variable reference if `type_byte` indicates VAR and `value` specifies an invalid variable.
 
 #### c. `add` (2OP)
 
 *   **`Mnemonic`**: `add`
-*   **`Opcode Value`**: `0x0220` (Example)
+*   **`Opcode Value`**: `0x0214`
 *   **`Form`**: `2OP`
-*   **`Operand Types`**: `operand1 (Small Constant/Variable)`, `operand2 (Small Constant/Variable)`, `store_variable_ref (Variable Reference)`
-    *   Operand types for `operand1` and `operand2` are determined by type bytes following the opcode itself.
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: 1 byte for `operand1`.
+    *   `type_byte2 (Operand Type Specifier)`: 1 byte for `operand2`.
+        *   Type specifier values: `0x00` (LC), `0x01` (SC), `0x02` (VAR).
+    *   `operand1 (LC/SC/VAR)`: The first value.
+    *   `operand2 (LC/SC/VAR)`: The second value.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the result.
 *   **`Description`**: Adds `operand1` and `operand2`, stores the 64-bit result in `store_variable_ref`.
 *   **`Operation Details`**:
-    1.  Reads `operand1`.
-    2.  Reads `operand2`.
-    3.  Computes `result = (operand1 + operand2) & 0xFFFFFFFFFFFFFFFF` (unsigned 64-bit addition, wraps on overflow).
-    4.  Stores `result` into the variable specified by `store_variable_ref`.
-    5.  PC advances past this instruction and its operands.
+    1.  Reads `type_byte1`. Based on it, reads `operand1`.
+    2.  Reads `type_byte2`. Based on it, reads `operand2`.
+    3.  Fetches actual values for `operand1` and `operand2` if they are VAR type. SC types are zero-extended to 64 bits.
+    4.  Computes `result = (value1 + value2)` using 64-bit signed arithmetic. Wraps on overflow.
+    5.  Stores `result` into the variable specified by `store_variable_ref`.
+    6.  PC advances past this instruction and all its components (opcode, type bytes, operands, store_variable_ref).
 *   **`Stores Result To`**: `store_variable_ref`.
 *   **`Branches If`**: Does not branch.
 *   **`Side Effects`**: None.
-*   **`Error Conditions`**: Invalid variable reference for operands or `store_variable_ref`.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte1` or `type_byte2`.
+    *   Invalid variable reference for `operand1`, `operand2` (if VAR type), or `store_variable_ref`.
 
 #### d. `call` (VAROP)
 
@@ -578,7 +597,7 @@ Each opcode will be defined using the following structure:
     *   The `routine_paddr` is the first operand read.
 *   **`Description`**: Calls the routine at the packed address `routine_paddr`, passing up to 7 arguments. Stores the routine's return value into `store_variable_ref`.
 *   **`Operation Details`**:
-    1.  Read `routine_paddr` operand. Resolve it to an absolute byte address in the Code Section. This is the target routine address.
+    1.  Read `routine_paddr` operand (which is a `RoutinePADDR` as defined in Section 4.A.0). Resolve it to an absolute byte address (`code_section_start + routine_paddr`) within the Code Section. This is the target routine address.
     2.  Read the type byte(s) for arguments. For each argument supplied:
         *   Read the argument value according to its type (Small Constant or Variable).
     3.  At the target routine address, the first byte specifies the number of local variables (0-15) for that routine.
@@ -599,69 +618,179 @@ Each opcode will be defined using the following structure:
     *   Invalid variable references for arguments or `store_variable_ref`.
     *   Calling a routine with more arguments than it's designed to handle (behavior TBD, may truncate or error).
 
+---
+
+*(The following EXT opcode definitions continue the "Example Opcode Definitions" numbering. EXT opcodes are specialized instructions for ZM2, often handling complex operations like LLM interaction or advanced I/O. Their operand structures are explicitly defined for each opcode. If an operand can accept multiple types (e.g., Large Constant or Variable), it will be preceded by its own Operand Type Specifier byte, similar to VAROP operands: `0x00` for LC, `0x01` for SC, `0x02` for VAR, `0x03` for PADDR.)*
+
 #### e. `start_llm_parse` (EXT)
 
 *   **`Mnemonic`**: `start_llm_parse`
-*   **`Opcode Value`**: `0xEE00` (Example, assuming `EE` prefix for EXT LLM opcodes)
+*   **`Opcode Value`**: `0xEE00`
 *   **`Form`**: `EXT`
-*   **`Operand Types`**: `input_text_addr (Large Constant/Variable Address)`, `context_data_addr (Large Constant/Variable Address)`, `result_buffer_addr (Large Constant/Variable Address)`, `max_result_len (Large Constant/Variable)`, `store_handle_variable_ref (Variable Reference)`
-    *   Operand types determined by a type byte following the opcode.
-*   **`Description`**: Initiates an asynchronous LLM parsing task for the ZSCII string at `input_text_addr` using context from `context_data_addr`. The LLM's structured response will eventually be placed in `result_buffer_addr`.
+*   **`Operand Types`**:
+    *   `type_input (Operand Type Specifier)`: For `input_text_addr`.
+    *   `input_text_addr (LC/VAR Address)`: Byte address of a null-terminated Z-encoded string for player input.
+    *   `type_context (Operand Type Specifier)`: For `context_data_addr`.
+    *   `context_data_addr (LC/VAR Address)`: Byte address of structured data (e.g., JSON string) for context. Can be 0.
+    *   `type_result_buf (Operand Type Specifier)`: For `result_buffer_addr`.
+    *   `result_buffer_addr (LC/VAR Address)`: Byte address of a buffer for the LLM's structured response.
+    *   `type_max_len (Operand Type Specifier)`: For `max_result_len`.
+    *   `max_result_len (LC/SC/VAR)`: Maximum number of bytes for `result_buffer_addr`.
+    *   `store_handle_variable_ref (Variable Reference)`: Variable to store the 64-bit request handle.
+*   **`Description`**: Initiates an asynchronous LLM parsing task for the string at `input_text_addr` using context from `context_data_addr`.
 *   **`Operation Details`**:
-    1.  Read all operands according to their types.
-    2.  Validate `input_text_addr`, `context_data_addr`, and `result_buffer_addr` (e.g., check if they are valid memory regions).
-    3.  Validate `max_result_len` (e.g., must be > 0).
-    4.  Check `flags1.LLMParseEnable`. If this flag is OFF (0):
-        *   Store 0 (or a specific error code like `LLM_ERR_DISABLED`) into `store_handle_variable_ref`.
-        *   Return (PC advances past this instruction and its operands).
-    5.  Generate a new, unique 64-bit handle for this LLM request. This handle should not be 0.
-    6.  The VM internally records the request details: handle, input text address, context data address, result buffer address, max result length, and the type of request (parse). This information is queued for the VM's asynchronous LLM task manager.
-    7.  The actual HTTP API call to the LLM service is *not* made synchronously by this opcode. It is managed by the VM's internal processes, triggered by game calls to `check_llm_status`.
-*   **`Stores Result To`**: The newly generated 64-bit `handle` (or 0/error code if `LLMParseEnable` is false or immediate validation fails) is stored in `store_handle_variable_ref`.
+    1.  Read all operands according to their specified types. Fetch values if VAR.
+    2.  Validate addresses (`input_text_addr`, `result_buffer_addr` must be valid; `context_data_addr` can be 0).
+    3.  Validate `max_result_len` (must be > 0).
+    4.  Check `flags1.LLMParseEnable`. If OFF (0), store 0 (or `LLM_ERR_DISABLED`) into `store_handle_variable_ref` and return.
+    5.  Generate a new, unique 64-bit non-zero handle for this LLM request.
+    6.  The VM internally records the request: handle, addresses, max length, and type (parse).
+    7.  The actual API call is managed by the VM, typically triggered/polled via `check_llm_status`.
+*   **`Stores Result To`**: The new `handle` (or error code) is stored in `store_handle_variable_ref`.
 *   **`Branches If`**: Does not branch.
-*   **`Side Effects`**: An LLM request is queued within the VM.
-*   **`Error Conditions`**:
-    *   Invalid memory address for `input_text_addr`, `context_data_addr`, or `result_buffer_addr`.
-    *   `max_result_len` is zero or unreasonably small.
-    *   `LLMParseEnable` flag in `flags1` is false.
-    *   Failure to generate a unique handle (highly unlikely).
-    *   Invalid variable reference for `store_handle_variable_ref` or any variable operands.
+*   **`Side Effects`**: An LLM parse request is queued.
+*   **`Error Conditions`**: Invalid type bytes. Invalid addresses or `max_result_len`. `LLMParseEnable` is false. Failure to generate handle. Invalid `store_handle_variable_ref`.
 
-#### f. `get_context_as_json` (EXT)
+#### f. `start_llm_generate` (EXT)
+
+*   **`Mnemonic`**: `start_llm_generate`
+*   **`Opcode Value`**: `0xEE01`
+*   **`Form`**: `EXT`
+*   **`Operand Types`**:
+    *   `type_prompt (Operand Type Specifier)`: For `prompt_text_addr`.
+    *   `prompt_text_addr (LC/VAR Address)`: Byte address of a null-terminated Z-encoded string for the LLM prompt.
+    *   `type_context (Operand Type Specifier)`: For `context_data_addr`.
+    *   `context_data_addr (LC/VAR Address)`: Byte address of structured context data. Can be 0.
+    *   `type_result_buf (Operand Type Specifier)`: For `result_buffer_addr`.
+    *   `result_buffer_addr (LC/VAR Address)`: Byte address of a buffer for the LLM's generated Z-encoded text.
+    *   `type_max_len (Operand Type Specifier)`: For `max_result_len`.
+    *   `max_result_len (LC/SC/VAR)`: Maximum bytes for `result_buffer_addr`.
+    *   `type_creativity (Operand Type Specifier)`: For `creativity_level`.
+    *   `creativity_level (LC/SC/VAR)`: Value (e.g., 0-100) for LLM temperature.
+    *   `store_handle_variable_ref (Variable Reference)`: Variable to store the 64-bit request handle.
+*   **`Description`**: Initiates an asynchronous LLM text generation task.
+*   **`Operation Details`**:
+    1.  Read all operands per types. Fetch VAR values.
+    2.  Validate addresses and `max_result_len`.
+    3.  Check `flags1.LLMGenerateEnable`. If OFF (0), store 0 (or `LLM_ERR_DISABLED`) into `store_handle_variable_ref` and return.
+    4.  Generate a new, unique 64-bit non-zero handle.
+    5.  VM records request details: handle, addresses, max length, creativity, type (generate).
+    6.  Actual API call managed by VM, polled via `check_llm_status`.
+*   **`Stores Result To`**: New `handle` (or error code) in `store_handle_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: An LLM generate request is queued.
+*   **`Error Conditions`**: Invalid type bytes. Invalid addresses, `max_result_len`, or `creativity_level`. `LLMGenerateEnable` is false. Failure to generate handle. Invalid `store_handle_variable_ref`.
+
+#### g. `check_llm_status` (EXT)
+
+*   **`Mnemonic`**: `check_llm_status`
+*   **`Opcode Value`**: `0xEE02`
+*   **`Form`**: `EXT`
+*   **`Operand Types`**:
+    *   `type_handle (Operand Type Specifier)`: For `handle`.
+    *   `handle (LC/SC/VAR)`: The 64-bit handle of the LLM request to check.
+    *   `store_status_variable_ref (Variable Reference)`: Variable to store the status code.
+*   **`Description`**: Polls the status of a pending LLM request.
+*   **`Operation Details`**:
+    1.  Read `handle` operand.
+    2.  VM checks internal state of the request associated with `handle`. This may involve checking network connection, sending request if not yet sent, or processing an incoming response.
+    3.  Status codes stored in `store_status_variable_ref`:
+        *   `0`: In Progress.
+        *   `1`: Success (result is ready in the designated `result_buffer_addr`).
+        *   `2`: Failed (Network error, API error, timeout during HTTP).
+        *   `3`: Invalid Handle.
+        *   `4`: LLM Processing Error (LLM service returned an error).
+        *   `5`: Result Buffer Too Small (detected by VM before/during writing).
+*   **`Stores Result To`**: `status_code` in `store_status_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: May trigger network activity. Internal state of LLM request updated. If successful, result written to previously specified buffer.
+*   **`Error Conditions`**: Invalid type byte for `handle`. Invalid `handle` value (if not caught by status 3). Invalid `store_status_variable_ref`.
+
+#### h. `get_llm_result` (EXT)
+
+*   **`Mnemonic`**: `get_llm_result`
+*   **`Opcode Value`**: `0xEE03`
+*   **`Form`**: `EXT`
+*   **`Operand Types`**:
+    *   `type_handle (Operand Type Specifier)`: For `handle`.
+    *   `handle (LC/SC/VAR)`: The 64-bit handle of the completed LLM request.
+    *   `store_status_variable_ref (Variable Reference)`: Variable to store a confirmation status.
+*   **`Description`**: Confirms retrieval of a successful LLM operation's result. Called after `check_llm_status` returns 1 (Success).
+*   **`Operation Details`**:
+    1.  Read `handle` operand.
+    2.  VM verifies that the request associated with `handle` is indeed in a 'Success' state and the result has been written to its buffer.
+    3.  Status codes stored in `store_status_variable_ref`:
+        *   `0`: Success (result is confirmed available in its buffer).
+        *   `1`: Error Retrieving (e.g., handle was not in 'Success' state, or internal inconsistency).
+        *   `2`: Invalid Handle.
+    4.  This opcode primarily serves as a formal acknowledgment by the Z-code that it is proceeding with a successfully completed LLM operation. The VM would have already made the data available when `check_llm_status` first reported success.
+*   **`Stores Result To`**: `status_code` in `store_status_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None, beyond formally consuming the result from the VM's perspective for that handle.
+*   **`Error Conditions`**: Invalid type byte for `handle`. Invalid `handle` value. Invalid `store_status_variable_ref`.
+
+#### i. `get_context_as_json` (EXT)
 
 *   **`Mnemonic`**: `get_context_as_json`
-*   **`Opcode Value`**: `0xEE02` (Example)
+*   **`Opcode Value`**: `0xEE04`
 *   **`Form`**: `EXT`
-*   **`Operand Types`**: `object_scope_flag (Small Constant/Variable)`, `max_depth (Small Constant/Variable)`, `output_buffer_addr (Large Constant/Variable Address)`, `max_output_len (Large Constant/Variable)`, `store_status_variable_ref (Variable Reference)`
-    *   Operand types determined by a type byte following the opcode.
-*   **`Description`**: Collects relevant game state information based on `object_scope_flag` and `max_depth`, formats it as a JSON string, and writes it to `output_buffer_addr`.
+*   **`Operand Types`**:
+    *   `type_scope (Operand Type Specifier)`: For `object_scope_flag`.
+    *   `object_scope_flag (LC/SC/VAR)`: Bitmask defining scope (player inv, location objects, globals, events).
+    *   `type_depth (Operand Type Specifier)`: For `max_depth`.
+    *   `max_depth (LC/SC/VAR)`: Max depth for object tree traversal.
+    *   `type_output_buf (Operand Type Specifier)`: For `output_buffer_addr`.
+    *   `output_buffer_addr (LC/VAR Address)`: Byte address for the JSON string.
+    *   `type_max_len (Operand Type Specifier)`: For `max_output_len`.
+    *   `max_output_len (LC/SC/VAR)`: Maximum bytes for `output_buffer_addr`.
+    *   `store_status_variable_ref (Variable Reference)`: Variable to store the status code.
+*   **`Description`**: Collects game state information and formats it as a JSON string in `output_buffer_addr`.
 *   **`Operation Details`**:
-    1.  Read all operands according to their types.
+    1.  Read all operands per types. Fetch VAR values.
     2.  Validate `output_buffer_addr` and `max_output_len`.
-    3.  Based on `object_scope_flag` bits and `max_depth`:
-        *   Gather player inventory.
-        *   Gather objects in the current location.
-        *   Gather specified global variables.
-        *   (Other context elements as defined by the flag).
-    4.  Construct a JSON string representing this gathered information.
-    5.  Get the length of the generated JSON string.
-    6.  If JSON string length (including null terminator) > `max_output_len`:
-        *   Store status code `1` (Output Buffer Too Small) into `store_status_variable_ref`.
-        *   Optionally, write a truncated (but still valid, if possible) JSON or an error JSON to `output_buffer_addr`.
-        *   Return.
-    7.  Write the complete JSON string (including null terminator) to `output_buffer_addr`.
-    8.  Store status code `0` (Success) into `store_status_variable_ref`.
-*   **`Stores Result To`**: A `status_code` is stored in `store_status_variable_ref`:
-    *   `0`: Success.
-    *   `1`: Output Buffer Too Small.
-    *   `2`: Invalid Scope Flag (unrecognized bits set in `object_scope_flag`).
-    *   `3`: Internal JSON Generation Error (e.g., VM failed to serialize data).
+    3.  Based on `object_scope_flag` and `max_depth`, gather game state (see Section 4, VM Utility Opcodes for details on flags and JSON structure).
+    4.  Construct JSON string. If its length > `max_output_len`, store status 1 (Buffer Too Small) and optionally write truncated JSON.
+    5.  Else, write complete JSON to `output_buffer_addr` and store status 0 (Success).
+*   **`Stores Result To`**: `status_code` (0=Success, 1=BufferSmall, 2=InvalidScope, 3=JSONError) in `store_status_variable_ref`.
 *   **`Branches If`**: Does not branch.
 *   **`Side Effects`**: Memory at `output_buffer_addr` is overwritten.
-*   **`Error Conditions`**:
-    *   Invalid `output_buffer_addr`.
-    *   `max_output_len` is too small to hold even a minimal JSON structure (e.g., `{}`).
-    *   Invalid variable references for operands or `store_status_variable_ref`.
+*   **`Error Conditions`**: Invalid type bytes. Invalid addresses or `max_output_len`. Invalid `store_status_variable_ref`.
+
+#### j. `aread` (EXT)
+
+*   **`Mnemonic`**: `aread`
+*   **`Opcode Value`**: `0xEE05`
+*   **`Form`**: `EXT` (behaves like a VAROP in terms of argument structure)
+*   **`Operand Types`**:
+    *   `type_text_buf (Operand Type Specifier)`: For `text_buffer_addr`.
+    *   `text_buffer_addr (LC/VAR Address)`: Buffer to store player's typed text. First byte must contain max chars.
+    *   `type_parse_buf (Operand Type Specifier)`: For `parse_buffer_addr`.
+    *   `parse_buffer_addr (LC/VAR Address)`: Optional buffer for dictionary parse (0 if not used). First byte max words.
+    *   (Optional) `type_timeout (Operand Type Specifier)`: For `timeout_seconds`.
+    *   (Optional) `timeout_seconds (LC/SC/VAR)`: Number of seconds for timeout (0 for no timeout).
+    *   (Optional) `type_routine (Operand Type Specifier)`: For `timeout_routine_paddr`.
+    *   (Optional) `timeout_routine_paddr (PADDR)`: Packed address of routine to call on timeout.
+    *   `store_terminator_variable_ref (Variable Reference)`: Stores the terminating character code.
+*   **`Description`**: Reads player input with optional timeout. Stores text, optionally parses, and returns terminator.
+*   **`Operation Details`**:
+    1.  Read `text_buffer_addr` and `parse_buffer_addr`. Fetch VARs.
+    2.  Read optional `timeout_seconds` and `timeout_routine_paddr` if provided (determined by presence of type bytes).
+    3.  Display input prompt.
+    4.  If `timeout_seconds > 0`, start timer.
+    5.  Wait for player input line or timeout.
+    6.  If timeout occurs:
+        *   Resolve `timeout_routine_paddr` (a `RoutinePADDR` as per Section 4.A.0) to an absolute address. Call the routine at this address (if `timeout_routine_paddr` was provided and is valid).
+        *   Store 0 (or a specific timeout terminator code if defined for ZM2) in `store_terminator_variable_ref`.
+        *   Text in `text_buffer_addr` might be empty or partial. Its length byte should be updated.
+        *   Return.
+    7.  If input received:
+        *   Store characters read into `text_buffer_addr` (second byte stores count, then ZSCII text, null terminated if space).
+        *   If `parse_buffer_addr` is non-zero, perform dictionary tokenization as per `sread`/`tokenise`.
+        *   Store the terminating character's ZSCII code (e.g., newline, function key if those are terminators) in `store_terminator_variable_ref`.
+*   **`Stores Result To`**: Terminating character code in `store_terminator_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Player I/O. Memory at buffers modified. Potential call to timeout routine.
+*   **`Error Conditions`**: Invalid type bytes. Invalid addresses, PADDR. Buffer sizes too small.
 
 #### g. `sread` (VAROP)
 
@@ -695,6 +824,1802 @@ Each opcode will be defined using the following structure:
     *   Buffer sizes specified in `text_buffer_addr` or `parse_buffer_addr` being too small.
 
 **Note on `aread`:** The `aread` opcode, when implemented with parsing enabled (via a non-zero `parse_buffer_addr`), uses the same `parse_buffer_addr` format as described for `sread`.
+
+#### h. `save` (0OP)
+
+*   **`Mnemonic`**: `save`
+*   **`Opcode Value`**: `0x00B5`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: Branch data follows the opcode.
+*   **`Description`**: Attempts to save the current game state. Branches if the save operation is successful.
+*   **`Operation Details`**:
+    1.  The VM checks if save/load operations are enabled via the `SaveLoadEnable` flag in `flags1` of the Header. If not enabled, the operation fails.
+    2.  The VM attempts to serialize the current game state. This includes:
+        *   The entire Dynamic Data Section (global variables, object states, heap, stack).
+        *   Key VM registers: Program Counter (PC), Stack Pointer (SP), current routine's frame pointer.
+    3.  The serialization format should follow the ZM2 Quetzal-like adaptation (see Section 6: Game State Management).
+    4.  The VM prompts the player for a filename or uses a platform-specific mechanism to choose a save file location.
+    5.  The serialized data is written to the chosen file.
+    6.  If the save operation is successful (file written and verified correctly):
+        *   A branch is performed according to the branch data.
+    7.  If the save operation fails for any reason (e.g., `SaveLoadEnable` is false, disk error, user cancellation, serialization error):
+        *   Execution continues with the instruction immediately following the branch data (i.e., the branch is not taken).
+    8.  The PC is updated according to whether the branch was taken or not.
+*   **`Stores Result To`**: Does not store a result directly. The success/failure is indicated by whether the branch is taken.
+*   **`Branches If`**: The save operation completes successfully.
+    *   The branch information is encoded as per standard Z-Machine branch data (1 or 2 bytes following the opcode, determining offset and condition sense - though for `save`, the condition is implicit success).
+    *   A branch to offset 0 means "return false from current routine" (though this is not standard for `save`, usually it's a jump address).
+    *   A branch to offset 1 means "return true from current routine" (similarly, not standard).
+    *   Other values are added to the PC (from the address after the branch data) to determine the next instruction address.
+*   **`Side Effects`**: A save file containing the game state is created or overwritten on the storage medium. Player I/O for filename prompt.
+*   **`Error Conditions`**:
+    *   `SaveLoadEnable` flag in `flags1` is false.
+    *   Disk full or write error.
+    *   User cancellation during file selection.
+    *   Internal error during state serialization.
+
+#### i. `restore` (0OP)
+
+*   **`Mnemonic`**: `restore`
+*   **`Opcode Value`**: `0x00B6`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: Branch data follows the opcode. (Branch is taken if restore *fails*).
+*   **`Description`**: Attempts to restore a previously saved game state. If successful, execution does not return to the caller but resumes from the PC in the saved state. If restoration fails, it branches.
+*   **`Operation Details`**:
+    1.  The VM checks if save/load operations are enabled via the `SaveLoadEnable` flag in `flags1` of the Header. If not enabled, the operation fails.
+    2.  The VM prompts the player for a filename or uses a platform-specific mechanism to select a save file.
+    3.  The VM attempts to read and deserialize the game state from the chosen file.
+    4.  **Header Verification (`IFhd`)**: The `IFhd` chunk is read. Story ID, release number, and checksum are compared with the currently loaded story. If they don't match, the restore fails.
+    5.  **Memory and Stack Restoration**: If headers match, the Dynamic Data Section and call stack are restored from the save file data.
+    6.  **Register Restoration**: The PC, SP, and other relevant VM registers are restored.
+    7.  If the entire restore operation is successful:
+        *   The VM **does not** return to the instruction following `restore`. Instead, it immediately begins execution at the restored Program Counter.
+    8.  If the restore operation fails for any reason (e.g., `SaveLoadEnable` is false, file not found, corrupted file, header mismatch, deserialization error):
+        *   A branch is performed according to the branch data. (Note: This is the inverse of `save`; `restore` branches on failure).
+*   **`Stores Result To`**: Does not store a result. In ZM2, `restore` does not return to the caller if successful.
+*   **`Branches If`**: The restore operation *fails*.
+    *   Branch information encoding is standard. The branch is taken if the restore cannot be completed.
+*   **`Side Effects`**: If successful, the entire game state (memory, PC, stack) is replaced by the saved state. Player I/O for filename prompt.
+*   **`Error Conditions`**:
+    *   `SaveLoadEnable` flag in `flags1` is false.
+    *   Save file not found or inaccessible.
+    *   Save file is corrupted or not a valid ZM2 save file.
+    *   Save file is for a different story file (ID, release, or checksum mismatch).
+    *   Internal error during state deserialization.
+
+#### j. `restart` (0OP)
+
+*   **`Mnemonic`**: `restart`
+*   **`Opcode Value`**: `0x00B7`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: None.
+*   **`Description`**: Restarts the game from the beginning, reinitializing memory to its original state from the story file.
+*   **`Operation Details`**:
+    1.  The VM reloads the game state as if it were starting fresh:
+        *   The Dynamic Data Section is re-initialized (e.g., global variables reset from initial values, stack cleared).
+        *   The Program Counter (PC) is set to the initial execution address specified in the story file header.
+        *   The call stack is cleared.
+        *   Any other dynamic aspects of game state (e.g., object locations if they were moved from their initial static definitions) are reset to their initial state as defined in the Static Data section or by initial game setup routines.
+    2.  Execution begins from the initial PC. This operation does not return.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: The entire current game state is discarded and replaced with the initial game state. The screen may be cleared (interpreter-dependent).
+*   **`Error Conditions`**: None typically, unless there's a severe issue reloading the initial state (which would be a VM bug).
+
+#### k. `ret_popped` (0OP)
+
+*   **`Mnemonic`**: `ret_popped`
+*   **`Opcode Value`**: `0x00B8`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: None.
+*   **`Description`**: Returns from the current routine with the value currently at the top of the game stack. The value is popped from the stack.
+*   **`Operation Details`**:
+    1.  The value at the top of the game stack is popped. Let this be `returnValue`.
+    2.  The current routine's stack frame is validated and prepared for removal.
+    3.  The Program Counter (PC) is set to the return address stored in the current stack frame.
+    4.  The current stack frame is popped from the call stack, restoring the previous frame pointer.
+*   **`Stores Result To`**: The `returnValue` (popped from the stack) is stored into the variable indicated by the `store_variable_ref` of the `call` opcode that invoked the current routine.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Call stack depth decreases by one. One value is popped from the game stack.
+*   **`Error Conditions`**:
+    *   Stack underflow if the game stack is empty when `ret_popped` is called.
+    *   Stack underflow if called when no routine call is active (e.g., from top-level execution).
+
+#### l. `quit` (0OP)
+
+*   **`Mnemonic`**: `quit`
+*   **`Opcode Value`**: `0x00BA`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: None.
+*   **`Description`**: Terminates the game execution immediately.
+*   **`Operation Details`**:
+    1.  The VM halts all execution.
+    2.  Any final messages (e.g., "Game Over") are typically printed by game logic *before* `quit` is called.
+    3.  The interpreter may close files, release resources, and exit.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: The game ends. The VM stops.
+*   **`Error Conditions`**: None.
+
+#### m. `new_line` (0OP)
+
+*   **`Mnemonic`**: `new_line`
+*   **`Opcode Value`**: `0x00BB`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: None.
+*   **`Description`**: Prints a newline character (carriage return and line feed, or equivalent) to the current output stream.
+*   **`Operation Details`**:
+    1.  The VM sends a newline sequence (e.g., ZSCII code 13, or platform-specific newline) to the active output stream(s).
+    2.  PC advances past this instruction.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Output cursor moves to the beginning of the next line.
+*   **`Error Conditions`**: None, unless an I/O error occurs on the output stream.
+
+#### n. `show_status` (0OP)
+
+*   **`Mnemonic`**: `show_status`
+*   **`Opcode Value`**: `0x00BC`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: None.
+*   **`Description`**: Requests the VM to display the game's status line (e.g., current room name, score, turns). This is a request; the VM is not obligated to redisplay it if it's already visible or not supported. In ZM2, this opcode's behavior is largely up to the interpreter's UI implementation.
+*   **`Operation Details`**:
+    1.  The VM receives the request to display the status line.
+    2.  Traditionally (Version 3):
+        *   The game's current score would be in global variable G1.
+        *   The number of turns elapsed would be in global variable G2.
+        *   The object ID of the player's current location is typically in a global variable (e.g., G0). The VM prints the short name of this object.
+    3.  For ZM2, the interpreter may:
+        *   Redraw a dedicated status line window or area if the UI supports it, using current values of score/turns variables (conventionally G1, G2) and player location.
+        *   If the UI is purely sequential text, it might print a formatted status line directly to the main output stream.
+        *   Do nothing if the status is always visible or the UI paradigm doesn't include a Z-Machine style status line.
+    4.  PC advances past this instruction.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: May cause output to the screen.
+*   **`Error Conditions`**: None.
+
+#### o. `verify` (0OP)
+
+*   **`Mnemonic`**: `verify`
+*   **`Opcode Value`**: `0x00BD`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: Branch data follows the opcode.
+*   **`Description`**: Performs a checksum verification of the game file. Branches if the verification is successful. (Primarily relevant for detecting file corruption).
+*   **`Operation Details`**:
+    1.  The VM recalculates a checksum of the entire story file, from `code_section_start` to the end of `static_data_section_start + static_data_section_length` (or as specified for the original Z-Machine checksumming rules, typically covering all game data but not dynamic memory).
+    2.  This calculated checksum is compared against the `checksum` value stored in the Header.
+    3.  If the checksums match, the verification is successful, and a branch is performed.
+    4.  If the checksums do not match, the verification fails, and execution continues with the instruction immediately following the branch data.
+*   **`Stores Result To`**: Does not store a result. Success/failure is indicated by the branch.
+*   **`Branches If`**: The game file's checksum is correct.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None, other than CPU time for checksum calculation.
+*   **`Error Conditions`**: File I/O error if parts of the game file need to be re-read and fail.
+
+#### p. `piracy` (0OP)
+
+*   **`Mnemonic`**: `piracy`
+*   **`Opcode Value`**: `0x00BF`
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: Branch data follows the opcode.
+*   **`Description`**: Informs the VM that the game believes it is a pirated copy. This opcode branches to a new location if the game is *not* pirated (according to some internal VM check, which is usually a placeholder). In ZM2, this is largely a legacy opcode; its behavior might be vestigial or tied to a simple interpreter flag.
+*   **`Operation Details`**:
+    1.  This opcode is a signal from the game to the interpreter.
+    2.  Historically, interpreters would simply branch as if the game were genuine, making it ineffective as a copy protection measure.
+    3.  For ZM2, the VM could:
+        *   Always branch (treat as genuine).
+        *   Check a (hypothetical) interpreter-specific flag or setting related to licensing.
+        *   Perform some other platform-specific check.
+    4.  If the VM considers the game "genuine" (or by default), a branch is performed.
+    5.  If the VM considers the game "pirated", execution continues with the instruction immediately following the branch data.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: The VM determines the game is "genuine" (which is the typical default behavior).
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None, unless the game code branched to by this opcode performs some action.
+*   **`Error Conditions`**: None.
+
+---
+
+*(The following 1OP opcode definitions continue the "Example Opcode Definitions" numbering, starting from 'q'. They generally follow a pattern where a `type_byte` after the opcode specifies the operand's type, unless the opcode implicitly defines the operand type (e.g., `inc` always takes a Variable).)*
+
+*   **Operand Type Specifier Byte (`type_byte`) for 1OP Opcodes (unless otherwise specified):**
+    *   `0x00`: Large Constant (LC) - 8 bytes follow for the operand.
+    *   `0x01`: Small Constant (SC) - 1 byte follows for the operand.
+    *   `0x02`: Variable (VAR) - 1 byte follows (specifies stack/local/global for the operand).
+    *   `0x03`: Packed Address (PADDR) - 4 bytes follow (used by `print_paddr`).
+    *(Note: Specific opcodes might only support a subset of these types.)*
+
+#### q. `get_sibling` (1OP)
+
+*   **`Mnemonic`**: `get_sibling`
+*   **`Opcode Value`**: `0x0181`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
+    *   `object_id (LC/SC/VAR)`: The 64-bit ID of the object whose sibling is to be retrieved. Must be a valid object ID > 0.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the resulting sibling object ID.
+    *   `branch_data?`: Branch if the object has a sibling.
+*   **`Description`**: Gets the ID of the next object in the sibling chain of `object_id`. Stores the ID in `store_variable_ref`. Branches if a sibling exists.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `object_id` according to the type.
+    2.  Validate `object_id`. If 0 or invalid, behavior is undefined (typically results in 0 and no branch, or an error).
+    3.  Retrieve the `sibling_obj_id` from the object entry for `object_id` (see Section 3, Static Data Section, Object Table).
+    4.  Store the retrieved `sibling_obj_id` (which can be 0 if no sibling) into `store_variable_ref`.
+    5.  If `sibling_obj_id` is not 0, a branch is performed.
+    6.  If `sibling_obj_id` is 0, execution continues with the instruction immediately following the branch data.
+*   **`Stores Result To`**: `store_variable_ref` (the sibling object ID, or 0 if none).
+*   **`Branches If`**: `sibling_obj_id != 0`.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `object_id`.
+    *   `object_id` is not a valid object ID.
+    *   Invalid `store_variable_ref`.
+
+#### r. `get_child` (1OP)
+
+*   **`Mnemonic`**: `get_child`
+*   **`Opcode Value`**: `0x0182`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
+    *   `object_id (LC/SC/VAR)`: The 64-bit ID of the object whose first child is to be retrieved. Must be a valid object ID > 0.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the resulting child object ID.
+    *   `branch_data?`: Branch if the object has a child.
+*   **`Description`**: Gets the ID of the first child object of `object_id`. Stores the ID in `store_variable_ref`. Branches if a child exists.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `object_id`.
+    2.  Validate `object_id`.
+    3.  Retrieve the `child_obj_id` from the object entry for `object_id`.
+    4.  Store the retrieved `child_obj_id` (or 0 if no child) into `store_variable_ref`.
+    5.  If `child_obj_id` is not 0, a branch is performed.
+    6.  If `child_obj_id` is 0, execution continues after branch data.
+*   **`Stores Result To`**: `store_variable_ref` (the child object ID, or 0 if none).
+*   **`Branches If`**: `child_obj_id != 0`.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `object_id`.
+    *   `object_id` is not a valid object ID.
+    *   Invalid `store_variable_ref`.
+
+#### s. `get_parent` (1OP)
+
+*   **`Mnemonic`**: `get_parent`
+*   **`Opcode Value`**: `0x0183`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
+    *   `object_id (LC/SC/VAR)`: The 64-bit ID of the object whose parent is to be retrieved. Must be a valid object ID > 0.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the resulting parent object ID.
+*   **`Description`**: Gets the ID of the parent object of `object_id`. Stores the ID in `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `object_id`.
+    2.  Validate `object_id`.
+    3.  Retrieve the `parent_obj_id` from the object entry for `object_id`.
+    4.  Store the retrieved `parent_obj_id` (or 0 if no parent) into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref` (the parent object ID, or 0 if none).
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `object_id`.
+    *   `object_id` is not a valid object ID.
+    *   Invalid `store_variable_ref`.
+
+#### t. `get_prop_len` (1OP)
+
+*   **`Mnemonic`**: `get_prop_len`
+*   **`Opcode Value`**: `0x0184`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `property_address`.
+    *   `property_address (LC/SC/VAR)`: The 64-bit byte address of the start of a property's data (NOT the property ID). This address typically comes from `get_prop_addr`.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the length of the property data in bytes.
+*   **`Description`**: Gets the length (in bytes) of the property data located at `property_address`.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `property_address`.
+    2.  If `property_address` is 0, the length is 0.
+    3.  Otherwise, the byte *before* `property_address` contains the size information for that property (as per ZM2 property format: Byte 1: Bits 0-5 ID, Bit 7 length specifier; Byte 2 (if Bit 7 is 1): Length L).
+        *   The VM reads the size byte(s) that precede `property_address`.
+        *   If Bit 7 of Byte 1 (at `property_address - N`, where N depends on property layout, typically N=1 or 2 for the start of size info) is 0, length is 1.
+        *   If Bit 7 of Byte 1 is 1, then Byte 2 (at `property_address - M`) gives the length L (1-255).
+        *   This is complex as it requires knowing how far back to read for the size byte. A simpler ZM2 rule: the address given *is* the address of the first size byte of the property entry.
+            Let's assume `property_address` points to the `id_and_length` byte(s) of a property entry.
+            Revised Operation:
+            1. Read `type_byte`, then `property_address`.
+            2. If `property_address` is 0, store 0 and return.
+            3. Read Byte 1 at `property_address`. Let Bit 7 be `len_spec`.
+            4. If `len_spec` is 0, the property data length is 1.
+            5. If `len_spec` is 1, read Byte 2 at `property_address + 1`. This value is the property data length `L` (1-255). If `L` is 0 from this byte, it's an error or means length 0. ZM2 spec: "A length of 0 in Byte 2 is invalid." So, lengths are 1-255.
+    4.  Store the determined length into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref` (length in bytes, or 0).
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `property_address`.
+    *   `property_address` is invalid (e.g., not within valid memory regions for properties).
+    *   Malformed property data at the address (e.g., length byte indicates a length that's inconsistent).
+    *   Invalid `store_variable_ref`.
+
+#### u. `inc` (1OP)
+
+*   **`Mnemonic`**: `inc`
+*   **`Opcode Value`**: `0x0185`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: The variable to be incremented (stack/local/global). This is provided directly as a 1-byte variable specifier; no preceding `type_byte`.
+*   **`Description`**: Increments the value of the specified variable by 1.
+*   **`Operation Details`**:
+    1.  Read the 1-byte `variable_ref`.
+    2.  Fetch the 64-bit value from the specified variable.
+    3.  Add 1 to the value. Arithmetic is signed, 64-bit two's complement. Wraps on overflow (e.g., MAX_INT + 1 = MIN_INT).
+    4.  Store the result back into the specified variable.
+*   **`Stores Result To`**: The incremented value is stored back into `variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: The value of `variable_ref` is changed.
+*   **`Error Conditions`**: Invalid `variable_ref`.
+
+#### v. `dec` (1OP)
+
+*   **`Mnemonic`**: `dec`
+*   **`Opcode Value`**: `0x0186`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: The variable to be decremented. Provided directly as a 1-byte specifier.
+*   **`Description`**: Decrements the value of the specified variable by 1.
+*   **`Operation Details`**:
+    1.  Read the 1-byte `variable_ref`.
+    2.  Fetch the 64-bit value from the specified variable.
+    3.  Subtract 1 from the value. Arithmetic is signed, 64-bit two's complement. Wraps on underflow (e.g., MIN_INT - 1 = MAX_INT).
+    4.  Store the result back into the specified variable.
+*   **`Stores Result To`**: The decremented value is stored back into `variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: The value of `variable_ref` is changed.
+*   **`Error Conditions`**: Invalid `variable_ref`.
+
+#### w. `print_addr` (1OP)
+
+*   **`Mnemonic`**: `print_addr`
+*   **`Opcode Value`**: `0x0187`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `byte_address`.
+    *   `byte_address (LC/SC/VAR)`: The 64-bit byte address of the Z-encoded string to be printed.
+*   **`Description`**: Prints the Z-encoded string located at `byte_address` in memory.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `byte_address`.
+    2.  Validate `byte_address` (must be within valid memory, typically Static Data or Dynamic Data).
+    3.  The VM reads Z-chars from `byte_address`, decodes them according to ZSCII rules (including abbreviation expansion, etc.), and prints them to the current output stream.
+    4.  Printing stops when the Z-string termination sequence is encountered.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Text is printed to the output.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `byte_address`.
+    *   `byte_address` is invalid or points to non-string data.
+    *   I/O error on output stream.
+
+#### x. `remove_obj` (1OP)
+
+*   **`Mnemonic`**: `remove_obj`
+*   **`Opcode Value`**: `0x0189`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
+    *   `object_id (LC/SC/VAR)`: The 64-bit ID of the object to be removed from its parent. Must be a valid object ID > 0.
+*   **`Description`**: Detaches `object_id` from its parent. The object itself is not deleted from memory, but it no longer resides within another object. Its parent becomes 0.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `object_id`.
+    2.  Validate `object_id`. If 0 or invalid, operation fails silently or logs an error.
+    3.  Let `P` be the parent of `object_id`. If `object_id` has no parent (`parent_obj_id == 0`), do nothing.
+    4.  If `P.child_obj_id == object_id`, then `P.child_obj_id` is set to `object_id.sibling_obj_id`.
+    5.  Otherwise, find `PrevSibling` of `object_id` (i.e., the object `X` such that `X.sibling_obj_id == object_id`). Set `PrevSibling.sibling_obj_id` to `object_id.sibling_obj_id`.
+    6.  Set `object_id.parent_obj_id` to 0.
+    7.  Set `object_id.sibling_obj_id` to 0 (conventionally, though not strictly required by original Z-Spec, it's cleaner for a detached object).
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Object tree is modified. `object_id` has its `parent_obj_id` (and possibly `sibling_obj_id`) changed. Its former parent and/or previous sibling will also be updated.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `object_id`.
+    *   `object_id` is not a valid object ID.
+
+#### y. `print_obj` (1OP)
+
+*   **`Mnemonic`**: `print_obj`
+*   **`Opcode Value`**: `0x018A`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
+    *   `object_id (LC/SC/VAR)`: The 64-bit ID of the object whose short name is to be printed. Must be a valid object ID > 0.
+*   **`Description`**: Prints the short name of the specified object.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `object_id`.
+    2.  Validate `object_id`. If 0 or invalid, print nothing or an error/debug message.
+    3.  Retrieve the `property_table_ptr` for `object_id`.
+    4.  The first entry in an object's property table is a 64-bit address pointing to its Z-encoded short name string. Read this address.
+    5.  Print the Z-encoded string at this address (similar to `print_addr`).
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Text (object's short name) is printed to the output.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `object_id`.
+    *   `object_id` is not a valid object ID.
+    *   Object has no short name property or property table pointer is invalid.
+    *   I/O error on output stream.
+
+#### z. `ret` (1OP)
+
+*   **`Mnemonic`**: `ret`
+*   **`Opcode Value`**: `0x018B`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `value`.
+    *   `value (LC/SC/VAR)`: The 64-bit value to be returned from the current routine.
+*   **`Description`**: Returns the `value` from the current routine.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `value` operand (fetching from variable if VAR).
+    2.  The current routine's stack frame is validated.
+    3.  The Program Counter (PC) is set to the return address stored in the current stack frame.
+    4.  The current stack frame is popped from the call stack.
+    5.  The `value` is stored into the variable indicated by the `store_variable_ref` of the `call` opcode that invoked the current routine.
+*   **`Stores Result To`**: The `value` is stored in the caller's specified result variable.
+*   **`Branches If`**: Does not branch, but transfers control to the return address.
+*   **`Side Effects`**: Call stack depth decreases by one.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `value`.
+    *   Invalid variable reference if `value` is VAR.
+    *   Stack underflow if called when no routine call is active.
+
+#### aa. `jump` (1OP)
+
+*   **`Mnemonic`**: `jump`
+*   **`Opcode Value`**: `0x018C`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `offset`. Operand must be SC or LC to provide a signed 16-bit value for original Z-Machine compatibility, or a larger value if ZM2 extends jump range. For now, assume it resolves to a signed 16-bit value.
+    *   `offset (SC/LC)`: A signed 16-bit value (typically from SC, or LC where only lower 16 bits are used). This is added to the PC to determine the new execution address.
+*   **`Description`**: Unconditionally jumps to a new address calculated by adding a signed 16-bit `offset` to the current PC.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `offset_value`.
+    2.  If `offset_value` was LC (8 bytes), it's truncated or validated to fit a signed 16-bit range for this specific jump instruction (e.g. -32768 to 32767). Or, ZM2 `jump` could support full 64-bit relative jumps if `offset` is LC. For Z-Spec compatibility, it's a 16-bit signed offset. Let's assume it's treated as a signed 16-bit value for now, obtained from the operand.
+    3.  The `offset_value` is sign-extended to 64 bits if it was SC.
+    4.  The new PC is calculated as: `PC_after_instruction + offset_value - 2`. (The -2 is because Z-Machine offsets are traditionally calculated from "address of byte after branch instruction" - which for a 1OP with 1-byte offset value, this is PC_of_opcode + 1_opcode_byte + 1_type_byte + 1_operand_byte. The offset calculation point is after the offset itself).
+        Let's simplify: The offset is relative to the address of the instruction *following* the `jump` opcode and its operand(s). So, `New_PC = Address_Of_Next_Instruction + Offset`.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Always (unconditional jump).
+*   **`Side Effects`**: PC is modified.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` (e.g. VAR for offset is not logical).
+    *   Resulting PC is outside valid code section.
+
+#### ab. `print_paddr` (1OP)
+
+*   **`Mnemonic`**: `print_paddr`
+*   **`Opcode Value`**: `0x018D`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Must indicate PADDR type for ZM2.
+    *   `packed_address (PADDR)`: A 32-bit packed address (StringPADDR type) of a Z-encoded string within the Static Data Section.
+*   **`Description`**: Prints the Z-encoded string located at the `packed_address`.
+*   **`Operation Details`**:
+    1.  Read `type_byte`. It should indicate PADDR (e.g. 0x03).
+    2.  Read the 4-byte `packed_address` value.
+    3.  Expand `packed_address` (which is a `StringPADDR` as defined in Section 4.A.0) to a full 64-bit absolute byte address: `AbsoluteAddress = static_data_section_start + packed_address`.
+    4.  Validate `AbsoluteAddress`.
+    5.  Print the Z-encoded string at `AbsoluteAddress` (similar to `print_addr`).
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Text is printed.
+*   **`Error Conditions`**:
+    *   `type_byte` does not specify PADDR.
+    *   Resulting `AbsoluteAddress` is invalid or points to non-string data.
+    *   I/O error.
+
+#### ac. `load` (1OP)
+
+*   **`Mnemonic`**: `load`
+*   **`Opcode Value`**: `0x018E`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: The variable whose content is to be loaded. This is provided directly as a 1-byte specifier.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the loaded value.
+*   **`Description`**: Reads the value from `variable_ref` and stores it into `store_variable_ref`. (This is distinct from Z-Spec `load` which is `load variable -> (result)` where result is an implicit store. ZM2 makes store explicit like other ops).
+*   **`Operation Details`**:
+    1.  Read the 1-byte `variable_ref` (source).
+    2.  Fetch the 64-bit value from this source variable.
+    3.  Read the `store_variable_ref` (destination).
+    4.  Store the fetched value into the destination variable.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None, beyond storing the value.
+*   **`Error Conditions`**:
+    *   Invalid `variable_ref` (source).
+    *   Invalid `store_variable_ref` (destination).
+
+#### ad. `not` (1OP)
+
+*   **`Mnemonic`**: `not`
+*   **`Opcode Value`**: `0x018F`
+*   **`Form`**: `1OP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `value`.
+    *   `value (LC/SC/VAR)`: The value to be bitwise NOTed.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the result.
+*   **`Description`**: Performs a bitwise NOT operation on the `value` and stores the result.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `value` operand.
+    2.  Perform bitwise NOT: `result = ~value`. This is a 64-bit operation.
+    3.  Store `result` into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte` for `value`.
+    *   Invalid variable reference if `value` is VAR.
+    *   Invalid `store_variable_ref`.
+
+---
+
+*(The following 2OP opcode definitions continue the "Example Opcode Definitions" numbering. They generally follow the pattern where two `type_byte`s after the opcode specify the operands' types, as detailed in the `add` opcode example (section 3.c). An explicit `store_variable_ref` or `branch_data` will follow the operands if the opcode stores a result or branches.)*
+
+*   **Operand Type Specifier Bytes (`type_byte1`, `type_byte2`) for 2OP Opcodes:**
+    *   Each operand is preceded by a type byte.
+    *   `0x00`: Large Constant (LC) - 8 bytes follow for the operand.
+    *   `0x01`: Small Constant (SC) - 1 byte follows for the operand.
+    *   `0x02`: Variable (VAR) - 1 byte follows (specifies stack/local/global for the operand).
+    *(Note: Specific opcodes might only support a subset of these types for each operand.)*
+
+#### ae. `je` (2OP)
+
+*   **`Mnemonic`**: `je`
+*   **`Opcode Value`**: `0x0201`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: For `value1`.
+    *   `value1 (LC/SC/VAR)`: The first value for comparison.
+    *   `type_byte2 (Operand Type Specifier)`: For `value2`.
+    *   `value2 (LC/SC/VAR)`: The second value for comparison.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Jump if `value1` is equal to `value2`. Can compare multiple values if `value2` is followed by more type/value pairs for `value3`, `value4`, etc., jumping if `value1` equals *any* of them. (This extended behavior is from ZSpec 5.2.2.1). For ZM2, we'll first define the basic two-operand `je`. A VAROP `je_varargs` could be defined for the multi-comparison version if needed, or this `je` could be specified to handle more. For now, strictly two operands.
+*   **`Operation Details`**:
+    1.  Read `type_byte1`, then `value1`. Fetch if VAR.
+    2.  Read `type_byte2`, then `value2`. Fetch if VAR.
+    3.  If `value1` is equal to `value2`, a branch is performed.
+    4.  Otherwise, execution continues after the branch data.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: `value1 == value2`.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: PC may be modified.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte1` or `type_byte2`.
+    *   Invalid variable reference if operands are VAR.
+
+#### af. `jl` (2OP)
+
+*   **`Mnemonic`**: `jl`
+*   **`Opcode Value`**: `0x0202`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: For `value1`.
+    *   `value1 (LC/SC/VAR)`: The first value.
+    *   `type_byte2 (Operand Type Specifier)`: For `value2`.
+    *   `value2 (LC/SC/VAR)`: The second value.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Jump if `value1` is less than `value2` (signed 64-bit comparison).
+*   **`Operation Details`**:
+    1.  Read `type_byte1`, then `value1`. Fetch if VAR.
+    2.  Read `type_byte2`, then `value2`. Fetch if VAR.
+    3.  Perform a signed 64-bit comparison.
+    4.  If `value1 < value2`, a branch is performed. Otherwise, execution continues after branch data.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: `value1 < value2` (signed).
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: PC may be modified.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte1` or `type_byte2`.
+    *   Invalid variable reference if operands are VAR.
+
+#### ag. `jg` (2OP)
+
+*   **`Mnemonic`**: `jg`
+*   **`Opcode Value`**: `0x0203`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: For `value1`.
+    *   `value1 (LC/SC/VAR)`: The first value.
+    *   `type_byte2 (Operand Type Specifier)`: For `value2`.
+    *   `value2 (LC/SC/VAR)`: The second value.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Jump if `value1` is greater than `value2` (signed 64-bit comparison).
+*   **`Operation Details`**:
+    1.  Read `type_byte1`, then `value1`. Fetch if VAR.
+    2.  Read `type_byte2`, then `value2`. Fetch if VAR.
+    3.  Perform a signed 64-bit comparison.
+    4.  If `value1 > value2`, a branch is performed. Otherwise, execution continues after branch data.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: `value1 > value2` (signed).
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: PC may be modified.
+*   **`Error Conditions`**:
+    *   Invalid `type_byte1` or `type_byte2`.
+    *   Invalid variable reference if operands are VAR.
+
+#### ah. `dec_chk` (2OP)
+
+*   **`Mnemonic`**: `dec_chk`
+*   **`Opcode Value`**: `0x0204`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: The variable to be decremented (1-byte specifier, type is implicitly VAR).
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_compare`.
+    *   `value_to_compare (LC/SC/VAR)`: The value to compare against after decrementing.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Decrements the variable `variable_ref` by 1 (signed). Then, branches if the new value of `variable_ref` is less than `value_to_compare`.
+*   **`Operation Details`**:
+    1.  Read `variable_ref` (1 byte). Fetch its 64-bit value.
+    2.  Decrement the value by 1 (signed 64-bit arithmetic, wraps on underflow).
+    3.  Store the new value back into `variable_ref`.
+    4.  Read `type_byte_val`, then `value_to_compare`. Fetch if VAR.
+    5.  If the new value of `variable_ref` is less than `value_to_compare` (signed comparison), a branch is performed.
+*   **`Stores Result To`**: The decremented value is stored back into `variable_ref`.
+*   **`Branches If`**: `(decremented_variable_ref_value) < value_to_compare` (signed).
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: `variable_ref` is modified. PC may be modified.
+*   **`Error Conditions`**:
+    *   Invalid `variable_ref`.
+    *   Invalid `type_byte_val`.
+    *   Invalid variable reference for `value_to_compare` if VAR.
+
+#### ai. `inc_chk` (2OP)
+
+*   **`Mnemonic`**: `inc_chk`
+*   **`Opcode Value`**: `0x0205`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: The variable to be incremented (1-byte specifier, type is implicitly VAR).
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_compare`.
+    *   `value_to_compare (LC/SC/VAR)`: The value to compare against after incrementing.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Increments the variable `variable_ref` by 1 (signed). Then, branches if the new value of `variable_ref` is greater than `value_to_compare`.
+*   **`Operation Details`**:
+    1.  Read `variable_ref` (1 byte). Fetch its 64-bit value.
+    2.  Increment the value by 1 (signed 64-bit arithmetic, wraps on overflow).
+    3.  Store the new value back into `variable_ref`.
+    4.  Read `type_byte_val`, then `value_to_compare`. Fetch if VAR.
+    5.  If the new value of `variable_ref` is greater than `value_to_compare` (signed comparison), a branch is performed.
+*   **`Stores Result To`**: The incremented value is stored back into `variable_ref`.
+*   **`Branches If`**: `(incremented_variable_ref_value) > value_to_compare` (signed).
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: `variable_ref` is modified. PC may be modified.
+*   **`Error Conditions`**:
+    *   Invalid `variable_ref`.
+    *   Invalid `type_byte_val`.
+    *   Invalid variable reference for `value_to_compare` if VAR.
+
+#### aj. `jin` (2OP)
+
+*   **`Mnemonic`**: `jin`
+*   **`Opcode Value`**: `0x0206`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj1 (Operand Type Specifier)`: For `object_id1`.
+    *   `object_id1 (LC/SC/VAR)`: The first object ID (child).
+    *   `type_byte_obj2 (Operand Type Specifier)`: For `object_id2`.
+    *   `object_id2 (LC/SC/VAR)`: The second object ID (parent).
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Jump if `object_id1` is a direct child of `object_id2`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj1`, then `object_id1`. Fetch if VAR. Must be a valid object ID > 0.
+    2.  Read `type_byte_obj2`, then `object_id2`. Fetch if VAR. Must be a valid object ID > 0.
+    3.  Retrieve the `parent_obj_id` of `object_id1`.
+    4.  If `parent_obj_id == object_id2`, a branch is performed.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: `object_id1` is a child of `object_id2`.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id1` or `object_id2` are not valid object IDs.
+
+#### ak. `test` (2OP)
+
+*   **`Mnemonic`**: `test`
+*   **`Opcode Value`**: `0x0207`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_bmp (Operand Type Specifier)`: For `bitmap`.
+    *   `bitmap (LC/SC/VAR)`: A 64-bit bitmap.
+    *   `type_byte_flags (Operand Type Specifier)`: For `flags`.
+    *   `flags (LC/SC/VAR)`: A 64-bit value representing flags to test.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Performs a bitwise AND of `bitmap` and `flags`. Branches if the result is non-zero.
+*   **`Operation Details`**:
+    1.  Read `type_byte_bmp`, then `bitmap`. Fetch/extend.
+    2.  Read `type_byte_flags`, then `flags`. Fetch/extend.
+    3.  Calculate `result = bitmap & flags`.
+    4.  If `result != 0`, a branch is performed.
+*   **`Stores Result To`**: Does not store a result. (Original Z-Spec `test` stores the result, ZM2 `test` is a branch op only, like `test_attr`).
+*   **`Branches If`**: `(bitmap & flags) != 0`.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   Invalid variable references.
+
+#### al. `or` (2OP)
+
+*   **`Mnemonic`**: `or`
+*   **`Opcode Value`**: `0x0208`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: For `value1`.
+    *   `value1 (LC/SC/VAR)`: The first value.
+    *   `type_byte2 (Operand Type Specifier)`: For `value2`.
+    *   `value2 (LC/SC/VAR)`: The second value.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the result.
+*   **`Description`**: Performs a bitwise OR of `value1` and `value2`. Stores the result in `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `type_byte1`, then `value1`. Fetch/extend.
+    2.  Read `type_byte2`, then `value2`. Fetch/extend.
+    3.  Calculate `result = value1 | value2` (64-bit bitwise OR).
+    4.  Store `result` into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   Invalid variable references.
+
+#### am. `and` (2OP)
+
+*   **`Mnemonic`**: `and`
+*   **`Opcode Value`**: `0x0209`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: For `value1`.
+    *   `value1 (LC/SC/VAR)`: The first value.
+    *   `type_byte2 (Operand Type Specifier)`: For `value2`.
+    *   `value2 (LC/SC/VAR)`: The second value.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the result.
+*   **`Description`**: Performs a bitwise AND of `value1` and `value2`. Stores the result in `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `type_byte1`, then `value1`. Fetch/extend.
+    2.  Read `type_byte2`, then `value2`. Fetch/extend.
+    3.  Calculate `result = value1 & value2` (64-bit bitwise AND).
+    4.  Store `result` into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   Invalid variable references.
+
+#### an. `test_attr` (2OP)
+
+*   **`Mnemonic`**: `test_attr`
+*   **`Opcode Value`**: `0x020A`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_attr (Operand Type Specifier)`: For `attribute_id`.
+    *   `attribute_id (LC/SC/VAR)`: The attribute number (0-63).
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Tests if the object `object_id` has the attribute `attribute_id` set. Branches if true.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be a valid object ID > 0.
+    2.  Read `type_byte_attr`, then `attribute_id`. Fetch/extend. Must be 0-63.
+    3.  Retrieve the 64-bit `attributes` field for `object_id`.
+    4.  If bit `attribute_id` is set in `attributes` (i.e., `(attributes >> attribute_id) & 1 == 1`), a branch is performed.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Object has the attribute.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` is not a valid object ID.
+    *   `attribute_id` is out of range (0-63).
+
+#### ao. `set_attr` (2OP)
+
+*   **`Mnemonic`**: `set_attr`
+*   **`Opcode Value`**: `0x020B`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_attr (Operand Type Specifier)`: For `attribute_id`.
+    *   `attribute_id (LC/SC/VAR)`: The attribute number (0-63) to set.
+*   **`Description`**: Sets attribute `attribute_id` on object `object_id`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid.
+    2.  Read `type_byte_attr`, then `attribute_id`. Fetch/extend. Must be 0-63.
+    3.  Retrieve the 64-bit `attributes` field for `object_id`.
+    4.  Set bit `attribute_id`: `attributes = attributes | (1ULL << attribute_id)`.
+    5.  Store the modified `attributes` back to the object table entry for `object_id`. (Note: Assumes object table attributes are writable, which they must be for ZM2).
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Attribute of the object is modified.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` is not a valid object ID.
+    *   `attribute_id` is out of range (0-63).
+
+#### ap. `clear_attr` (2OP)
+
+*   **`Mnemonic`**: `clear_attr`
+*   **`Opcode Value`**: `0x020C`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_attr (Operand Type Specifier)`: For `attribute_id`.
+    *   `attribute_id (LC/SC/VAR)`: The attribute number (0-63) to clear.
+*   **`Description`**: Clears attribute `attribute_id` on object `object_id`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid.
+    2.  Read `type_byte_attr`, then `attribute_id`. Fetch/extend. Must be 0-63.
+    3.  Retrieve the 64-bit `attributes` field for `object_id`.
+    4.  Clear bit `attribute_id`: `attributes = attributes & ~(1ULL << attribute_id)`.
+    5.  Store the modified `attributes` back.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Attribute of the object is modified.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` is not a valid object ID.
+    *   `attribute_id` is out of range (0-63).
+
+#### aq. `insert_obj` (2OP)
+
+*   **`Mnemonic`**: `insert_obj`
+*   **`Opcode Value`**: `0x020E`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID to be moved.
+    *   `type_byte_dest (Operand Type Specifier)`: For `destination_id`.
+    *   `destination_id (LC/SC/VAR)`: The object ID of the new parent.
+*   **`Description`**: Moves `object_id` to become the first child of `destination_id`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid (>0).
+    2.  Read `type_byte_dest`, then `destination_id`. Fetch if VAR. Must be valid (>0).
+    3.  If `object_id == destination_id`, error (cannot insert object into itself).
+    4.  Call `remove_obj` internally for `object_id` to detach it from its current parent.
+    5.  Set `object_id.parent_obj_id = destination_id`.
+    6.  Set `object_id.sibling_obj_id = destination_id.child_obj_id`.
+    7.  Set `destination_id.child_obj_id = object_id`.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Object tree is significantly modified.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` or `destination_id` are not valid object IDs or are 0.
+    *   Attempting to insert an object into itself.
+    *   `destination_id` is an invalid parent (e.g., not a container, though Z-Machine typically doesn't enforce this at opcode level).
+
+#### ar. `loadw` (2OP)
+
+*   **`Mnemonic`**: `loadw`
+*   **`Opcode Value`**: `0x020F`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
+    *   `array_addr (LC/SC/VAR)`: Byte address of the start of the array/table.
+    *   `type_byte_idx (Operand Type Specifier)`: For `word_index`.
+    *   `word_index (LC/SC/VAR)`: Index of the word to load (0-based).
+    *   `store_variable_ref (Variable Reference)`: Variable to store the loaded 64-bit word.
+*   **`Description`**: Loads a 64-bit word from `array_addr + (word_index * 8)` into `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_arr`, then `array_addr`. Fetch if VAR.
+    2.  Read `type_byte_idx`, then `word_index`. Fetch/extend.
+    3.  Calculate effective address: `EffectiveAddr = array_addr + (word_index * 8)`. (Ensure `word_index` is treated as unsigned for positive offset, or signed if negative indices are meaningful).
+    4.  Validate `EffectiveAddr` and `EffectiveAddr + 7` are within valid memory.
+    5.  Read the 64-bit word from `EffectiveAddr` (Big Endian).
+    6.  Store this word into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   Invalid variable references.
+    *   `EffectiveAddr` is out of bounds.
+
+#### as. `loadb` (2OP)
+
+*   **`Mnemonic`**: `loadb`
+*   **`Opcode Value`**: `0x0210`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
+    *   `array_addr (LC/SC/VAR)`: Byte address of the start of the array/table.
+    *   `type_byte_idx (Operand Type Specifier)`: For `byte_index`.
+    *   `byte_index (LC/SC/VAR)`: Index of the byte to load (0-based).
+    *   `store_variable_ref (Variable Reference)`: Variable to store the loaded byte (zero-extended to 64-bit).
+*   **`Description`**: Loads a byte from `array_addr + byte_index` into `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_arr`, then `array_addr`. Fetch if VAR.
+    2.  Read `type_byte_idx`, then `byte_index`. Fetch/extend.
+    3.  Calculate effective address: `EffectiveAddr = array_addr + byte_index`.
+    4.  Validate `EffectiveAddr` is within valid memory.
+    5.  Read the byte from `EffectiveAddr`.
+    6.  Zero-extend the byte to a 64-bit value.
+    7.  Store this value into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   Invalid variable references.
+    *   `EffectiveAddr` is out of bounds.
+
+#### at. `get_prop` (2OP)
+
+*   **`Mnemonic`**: `get_prop`
+*   **`Opcode Value`**: `0x0211`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_prop (Operand Type Specifier)`: For `property_id`.
+    *   `property_id (LC/SC/VAR)`: The property ID (1-63).
+    *   `store_variable_ref (Variable Reference)`: Variable to store the property value.
+*   **`Description`**: Gets the value of property `property_id` from object `object_id`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid.
+    2.  Read `type_byte_prop`, then `property_id`. Fetch/extend. Must be 1-63.
+    3.  Locate the property data for `object_id` and `property_id`.
+        *   Get `property_table_ptr` for `object_id`.
+        *   Iterate through properties until `property_id` is matched or end of list.
+    4.  If property not found: Load the default property value from property defaults table (using `property_id` to index it). The property defaults table starts at `static_data_section_start` (or a specific header pointer if ZM2 changes this). Each entry is a 64-bit word. Property ID 1 corresponds to index 0.
+    5.  If property found:
+        *   Determine its length (1 or L bytes from size info).
+        *   If length is 1 byte, read byte, zero-extend to 64-bit.
+        *   If length is 2 bytes (historically word), read 2 bytes, zero-extend to 64-bit. (ZM2 properties can be up to 255 bytes. This opcode traditionally reads 1 or 2 bytes. ZM2 needs clarification: Does `get_prop` only read first 1/2/4/8 bytes, or does it error for longer props?)
+        *   **ZM2 Clarification**: `get_prop` will read the first 8 bytes (a 64-bit word) if the property length is >= 8. If length is < 8, it reads the actual number of bytes and zero-extends to a 64-bit value. If property length is 0 (e.g., from `get_prop_len` on an invalid prop address), it should behave like property not found (i.e., return default).
+    6.  Store the value into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` is invalid.
+    *   `property_id` is invalid (0 or >63).
+
+#### au. `get_prop_addr` (2OP)
+
+*   **`Mnemonic`**: `get_prop_addr`
+*   **`Opcode Value`**: `0x0212`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_prop (Operand Type Specifier)`: For `property_id`.
+    *   `property_id (LC/SC/VAR)`: The property ID (1-63).
+    *   `store_variable_ref (Variable Reference)`: Variable to store the byte address of the property data.
+*   **`Description`**: Gets the byte address of the actual data for property `property_id` of object `object_id`. Returns 0 if property not present.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid.
+    2.  Read `type_byte_prop`, then `property_id`. Fetch/extend. Must be 1-63.
+    3.  Locate the property:
+        *   Get `property_table_ptr` for `object_id`.
+        *   Iterate through properties. If `property_id` found, the address stored is the address of the first byte of property data itself (after the size byte(s)).
+    4.  If property not found, store 0.
+    5.  Store address into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref` (address or 0).
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` is invalid.
+    *   `property_id` is invalid.
+
+#### av. `get_next_prop` (2OP)
+
+*   **`Mnemonic`**: `get_next_prop`
+*   **`Opcode Value`**: `0x0213`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_prop (Operand Type Specifier)`: For `property_id`.
+    *   `property_id (LC/SC/VAR)`: Previous property ID. If 0, get first property ID.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the next property ID (1-63). Stores 0 if no more properties.
+*   **`Description`**: Finds the next property ID for `object_id` after `property_id`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid.
+    2.  Read `type_byte_prop`, then `property_id`. Fetch/extend. (0 to find first, or 1-63).
+    3.  Get `property_table_ptr` for `object_id`. Skip object's short name.
+    4.  If `property_id == 0`:
+        *   Read first property's ID. Store it. If no properties, store 0.
+    5.  Else (`property_id` is 1-63):
+        *   Iterate through properties until `property_id` is found.
+        *   The ID of the *next* property in the list is stored. If current `property_id` is last, store 0.
+    6.  Store result (next property ID or 0) into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**:
+    *   Invalid type bytes.
+    *   `object_id` is invalid.
+    *   `property_id` is invalid (not 0 and not 1-63, or not found if not 0).
+
+#### aw. `sub` (2OP)
+
+*   **`Mnemonic`**: `sub`
+*   **`Opcode Value`**: `0x0215`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1 (Operand Type Specifier)`: For `value1`.
+    *   `value1 (LC/SC/VAR)`: Minuend.
+    *   `type_byte2 (Operand Type Specifier)`: For `value2`.
+    *   `value2 (LC/SC/VAR)`: Subtrahend.
+    *   `store_variable_ref (Variable Reference)`: Stores `value1 - value2`.
+*   **`Description`**: Subtracts `value2` from `value1`. Stores result.
+*   **`Operation Details`**:
+    1.  Read types and values for `value1`, `value2`.
+    2.  `result = value1 - value2` (64-bit signed, wraps).
+    3.  Store `result`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**: Invalid types or variable refs.
+
+#### ax. `mul` (2OP)
+
+*   **`Mnemonic`**: `mul`
+*   **`Opcode Value`**: `0x0216`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1`: For `value1`.
+    *   `value1 (LC/SC/VAR)`.
+    *   `type_byte2`: For `value2`.
+    *   `value2 (LC/SC/VAR)`.
+    *   `store_variable_ref`.
+*   **`Description`**: Multiplies `value1` by `value2`. Stores result.
+*   **`Operation Details`**:
+    1.  Read types/values.
+    2.  `result = value1 * value2` (64-bit signed, wraps).
+    3.  Store `result`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**: Invalid types or variable refs.
+
+#### ay. `div` (2OP)
+
+*   **`Mnemonic`**: `div`
+*   **`Opcode Value`**: `0x0217`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1`: For `dividend`.
+    *   `dividend (LC/SC/VAR)`.
+    *   `type_byte2`: For `divisor`.
+    *   `divisor (LC/SC/VAR)`.
+    *   `store_variable_ref`.
+*   **`Description`**: Divides `dividend` by `divisor` (signed integer division). Stores result.
+*   **`Operation Details`**:
+    1.  Read types/values.
+    2.  If `divisor` is 0: Halt VM if `DivByZeroHalt` flag is set in header. Otherwise, result is 0.
+    3.  Else: `result = dividend / divisor` (64-bit signed integer division, result truncates towards zero).
+    4.  Store `result`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Potential halt on division by zero.
+*   **`Error Conditions`**: Invalid types/var refs. Division by zero (if not halting).
+
+#### az. `mod` (2OP)
+
+*   **`Mnemonic`**: `mod`
+*   **`Opcode Value`**: `0x0218`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte1`: For `dividend`.
+    *   `dividend (LC/SC/VAR)`.
+    *   `type_byte2`: For `divisor`.
+    *   `divisor (LC/SC/VAR)`.
+    *   `store_variable_ref`.
+*   **`Description`**: Calculates `dividend` modulo `divisor`. Stores result.
+*   **`Operation Details`**:
+    1.  Read types/values.
+    2.  If `divisor` is 0: Halt VM if `DivByZeroHalt` flag set. Otherwise, result is 0.
+    3.  Else: `result = dividend % divisor`. Result has same sign as dividend.
+    4.  Store `result`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Potential halt on division by zero.
+*   **`Error Conditions`**: Invalid types/var refs. Division by zero (if not halting).
+
+#### ba. `set_colour` (2OP)
+
+*   **`Mnemonic`**: `set_colour`
+*   **`Opcode Value`**: `0x021B`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_fg (Operand Type Specifier)`: For `foreground_color`.
+    *   `foreground_color (LC/SC/VAR)`: Z-Machine color code for foreground.
+    *   `type_byte_bg (Operand Type Specifier)`: For `background_color`.
+    *   `background_color (LC/SC/VAR)`: Z-Machine color code for background.
+*   **`Description`**: Sets the foreground and background colors for text display. (V5+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_fg`, then `foreground_color`. Fetch/extend.
+    2.  Read `type_byte_bg`, then `background_color`. Fetch/extend.
+    3.  The VM interprets these color codes (e.g., 1=current, 2=black, 3=red, etc.) and attempts to set the display colors.
+    4.  If the interpreter doesn't support color, this opcode does nothing.
+    5.  ZM2 specific: Color codes could be expanded or reinterpreted (e.g. 24-bit RGB values if LC is used, or standard ZSCII color codes if SC is used). For now, assume standard ZSCII color codes (1-9).
+*   **`Stores Result To`**: Does not store.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Display colors may change.
+*   **`Error Conditions`**: Invalid type bytes or variable refs. Invalid color codes (if VM validates).
+
+#### bb. `throw` (2OP)
+
+*   **`Mnemonic`**: `throw`
+*   **`Opcode Value`**: `0x021C`
+*   **`Form`**: `2OP`
+*   **`Operand Types`**:
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_throw`.
+    *   `value_to_throw (LC/SC/VAR)`: The value to be thrown.
+    *   `type_byte_catch (Operand Type Specifier)`: For `catch_frame_id`.
+    *   `catch_frame_id (LC/SC/VAR)`: The ID of the catch frame to throw to.
+*   **`Description`**: Throws a value to a catch frame, unwinding the stack until the catch frame `catch_frame_id` is found. (V5+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_val`, then `value_to_throw`. Fetch/extend.
+    2.  Read `type_byte_catch`, then `catch_frame_id`. Fetch/extend.
+    3.  The VM unwinds the call stack, frame by frame.
+    4.  For each frame, it checks if it's a "catch frame" (set by `catch` opcode, which would store its ID).
+    5.  If a catch frame with a matching ID is found:
+        *   The stack is restored to that frame's state.
+        *   `value_to_throw` is stored in the result variable specified by that `catch` frame.
+        *   Execution continues from the instruction after the `catch` opcode.
+    6.  If the bottom of the stack is reached and no matching catch frame is found, the VM halts with an error "Uncaught throw".
+*   **`Stores Result To`**: Indirectly, to the result variable of a `catch` opcode.
+*   **`Branches If`**: Does not branch in the typical sense, but transfers control.
+*   **`Side Effects`**: Stack is unwound. PC changes.
+*   **`Error Conditions`**: Invalid type bytes or variable refs. Uncaught throw if `catch_frame_id` not found.
+
+---
+
+*(The following VAROP opcode definitions continue the "Example Opcode Definitions" numbering. VAROPs in ZM2 typically read a sequence of operand type bytes followed by the operands themselves. The number of operands is determined by the specific opcode. Refer to the `call` opcode (section 3.d) for a detailed example of operand parsing for VAROPs. Each operand that is not fixed (like a store_variable_ref) will be preceded by a type byte.)*
+
+*   **Operand Type Specifier Byte (`type_byte`) for VAROP Operands (unless otherwise specified for a particular operand):**
+    *   `0x00`: Large Constant (LC) - 8 bytes follow for the operand.
+    *   `0x01`: Small Constant (SC) - 1 byte follows for the operand.
+    *   `0x02`: Variable (VAR) - 1 byte follows (specifies stack/local/global for the operand).
+    *   `0x03`: Packed Address (PADDR) - 4 bytes follow.
+    *(Note: Not all opcodes will support all types for all operands.)*
+
+#### bc. `storew` (VAROP)
+
+*   **`Mnemonic`**: `storew`
+*   **`Opcode Value`**: `0x03E1`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
+    *   `array_addr (LC/SC/VAR)`: Byte address of the start of the array/table.
+    *   `type_byte_idx (Operand Type Specifier)`: For `word_index`.
+    *   `word_index (LC/SC/VAR)`: Index of the word to write to (0-based).
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_store`.
+    *   `value_to_store (LC/SC/VAR)`: The 64-bit word to store.
+*   **`Description`**: Stores `value_to_store` at address `array_addr + (word_index * 8)`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_arr`, then `array_addr`. Fetch if VAR.
+    2.  Read `type_byte_idx`, then `word_index`. Fetch/extend.
+    3.  Read `type_byte_val`, then `value_to_store`. Fetch if VAR.
+    4.  Calculate effective address: `EffectiveAddr = array_addr + (word_index * 8)`.
+    5.  Validate `EffectiveAddr` and `EffectiveAddr + 7` are within valid writable memory.
+    6.  Write the 64-bit `value_to_store` to `EffectiveAddr` (Big Endian).
+*   **`Stores Result To`**: Does not store a result in a variable (stores in memory).
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Memory is modified at `EffectiveAddr`.
+*   **`Error Conditions`**: Invalid type bytes. Invalid variable references. `EffectiveAddr` out of bounds.
+
+#### bd. `storeb` (VAROP)
+
+*   **`Mnemonic`**: `storeb`
+*   **`Opcode Value`**: `0x03E2`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
+    *   `array_addr (LC/SC/VAR)`: Byte address of the start of the array/table.
+    *   `type_byte_idx (Operand Type Specifier)`: For `byte_index`.
+    *   `byte_index (LC/SC/VAR)`: Index of the byte to write to (0-based).
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_store`.
+    *   `value_to_store (LC/SC/VAR)`: The byte value to store (lowest 8 bits are used).
+*   **`Description`**: Stores the lowest 8 bits of `value_to_store` at address `array_addr + byte_index`.
+*   **`Operation Details`**:
+    1.  Read `type_byte_arr`, then `array_addr`. Fetch if VAR.
+    2.  Read `type_byte_idx`, then `byte_index`. Fetch/extend.
+    3.  Read `type_byte_val`, then `value_to_store`. Fetch if VAR.
+    4.  Calculate effective address: `EffectiveAddr = array_addr + byte_index`.
+    5.  Validate `EffectiveAddr` is within valid writable memory.
+    6.  Take the lowest 8 bits of `value_to_store`.
+    7.  Write this byte to `EffectiveAddr`.
+*   **`Stores Result To`**: Does not store a result in a variable.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Memory is modified at `EffectiveAddr`.
+*   **`Error Conditions`**: Invalid type bytes. Invalid variable references. `EffectiveAddr` out of bounds.
+
+#### be. `put_prop` (VAROP)
+
+*   **`Mnemonic`**: `put_prop`
+*   **`Opcode Value`**: `0x03E3`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
+    *   `object_id (LC/SC/VAR)`: The object ID.
+    *   `type_byte_prop_id (Operand Type Specifier)`: For `property_id`.
+    *   `property_id (LC/SC/VAR)`: The property ID (1-63).
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_store`.
+    *   `value_to_store (LC/SC/VAR)`: The value to store in the property.
+*   **`Description`**: Writes `value_to_store` to property `property_id` of object `object_id`.
+*   **`Operation Details`**:
+    1.  Read operands: `object_id`, `property_id`, `value_to_store` using their type bytes.
+    2.  Validate `object_id` and `property_id` (1-63).
+    3.  Locate the property data for `object_id` and `property_id`.
+        *   If property does not exist, this is an error (unlike standard Z-Machine which might create it or use defaults; ZM2 properties must exist to be written by `put_prop` unless a future `create_prop` opcode is defined). Halt with error "Property not found".
+    4.  Determine the length of the existing property from its size information.
+    5.  The `value_to_store` is written into the property.
+        *   If the property's length is 1 byte, only the lowest byte of `value_to_store` is written.
+        *   If the property's length is 2 bytes, the lowest 2 bytes of `value_to_store` are written (Big Endian).
+        *   If the property's length is >= 8 bytes, the full 64-bit `value_to_store` is written.
+        *   If property's length is between 3 and 7 bytes, the lowest 'length' bytes of `value_to_store` are written.
+        *   It is an error if the property length is 0 or if `value_to_store` cannot logically fit (e.g. storing into a 0-length property, though ZM2 property length in definition is 1-255).
+*   **`Stores Result To`**: Does not store a result in a variable.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Property value of an object is modified.
+*   **`Error Conditions`**: Invalid type bytes. Invalid `object_id` or `property_id`. Property not found on object. Write error if property length is incompatible with storing a meaningful value (e.g. zero length).
+
+#### bf. `print_char` (VAROP)
+
+*   **`Mnemonic`**: `print_char`
+*   **`Opcode Value`**: `0x03E5`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: For `char_code`.
+    *   `char_code (LC/SC/VAR)`: ZSCII character code (0-255) or Unicode code point to print.
+*   **`Description`**: Prints a single character.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `char_code`. Fetch/extend.
+    2.  If `StrictZSCIICompatMode` is ON: `char_code` is treated as ZSCII. If > 255, print '?' or transliterate.
+    3.  If `StrictZSCIICompatMode` is OFF: `char_code` is treated as a Unicode code point. Print it using `print_unicode` logic.
+    4.  Standard ZSCII codes (e.g., 13 for newline) are honored.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Character printed.
+*   **`Error Conditions`**: Invalid type byte/var ref. I/O error.
+
+#### bg. `print_num` (VAROP)
+
+*   **`Mnemonic`**: `print_num`
+*   **`Opcode Value`**: `0x03E6`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: For `value`.
+    *   `value (LC/SC/VAR)`: Signed 64-bit integer to print.
+*   **`Description`**: Prints `value` as a signed decimal number.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `value`. Fetch/extend.
+    2.  Convert the 64-bit signed integer to its decimal string representation.
+    3.  Print the string.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Number printed.
+*   **`Error Conditions`**: Invalid type byte/var ref. I/O error.
+
+#### bh. `random` (VAROP)
+
+*   **`Mnemonic`**: `random`
+*   **`Opcode Value`**: `0x03E7`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_range (Operand Type Specifier)`: For `range`.
+    *   `range (LC/SC/VAR)`: A positive 64-bit integer.
+    *   `store_variable_ref (Variable Reference)`: Stores the random number.
+*   **`Description`**: Generates a random number between 1 and `range` (inclusive).
+*   **`Operation Details`**:
+    1.  Read `type_byte_range`, then `range`. Fetch/extend.
+    2.  If `range` is positive: Generate a pseudo-random integer `R` such that `1 <= R <= range`.
+    3.  If `range` is negative or zero:
+        *   Negative: Seeds the PRNG with `range` (absolute value). Result stored is 0.
+        *   Zero: Reseeds PRNG with a time-dependent value. Result stored is 0.
+    4.  Store result into `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: PRNG state may change.
+*   **`Error Conditions`**: Invalid type byte/var ref for `range`. Invalid `store_variable_ref`.
+
+#### bi. `push` (VAROP)
+
+*   **`Mnemonic`**: `push`
+*   **`Opcode Value`**: `0x03E8`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: For `value`.
+    *   `value (LC/SC/VAR)`: The 64-bit value to push onto the game stack.
+*   **`Description`**: Pushes `value` onto the game stack.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `value`. Fetch/extend.
+    2.  Push `value` onto the game stack. Stack pointer is incremented.
+*   **`Stores Result To`**: None directly (value is on stack).
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Game stack modified.
+*   **`Error Conditions`**: Invalid type byte/var ref. Stack overflow.
+
+#### bj. `pull` (VAROP)
+
+*   **`Mnemonic`**: `pull`
+*   **`Opcode Value`**: `0x03E9`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: Variable to store the value popped from the stack. If `variable_ref` is stack (0x00), value is popped and discarded.
+*   **`Description`**: Pops the top value from the game stack and stores it into `variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `variable_ref` (1 byte).
+    2.  Pop value from game stack. Stack pointer is decremented.
+    3.  If `variable_ref` is not 0x00 (stack), store the popped value into the specified local/global variable.
+    4.  If `variable_ref` is 0x00 (stack), the value is discarded. (This matches original Z-Spec `pull 0` behavior).
+*   **`Stores Result To`**: `variable_ref` (unless it's stack).
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Game stack modified.
+*   **`Error Conditions`**: Invalid `variable_ref`. Stack underflow.
+
+#### bk. `split_window` (VAROP)
+
+*   **`Mnemonic`**: `split_window`
+*   **`Opcode Value`**: `0x03EA`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_lines (Operand Type Specifier)`: For `lines`.
+    *   `lines (LC/SC/VAR)`: Number of lines for the upper window (window 1).
+*   **`Description`**: Splits the screen into two windows. Upper window (window 1) gets `lines` lines. Lower window (window 0) gets the rest. (V3+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_lines`, then `lines`. Fetch/extend.
+    2.  VM attempts to split the screen. Window 1 (upper) has `lines` height. Window 0 (lower) takes remaining.
+    3.  Current window becomes 0. Cursor moves to window 0.
+    4.  If `lines` is 0, only lower window exists.
+    5.  If interpreter cannot split, this may do nothing or set a flag.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Screen layout changes. Active window changes.
+*   **`Error Conditions`**: Invalid type byte/var ref. `lines` value invalid (e.g., > screen height).
+
+#### bl. `set_window` (VAROP)
+
+*   **`Mnemonic`**: `set_window`
+*   **`Opcode Value`**: `0x03EB`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_win (Operand Type Specifier)`: For `window_id`.
+    *   `window_id (LC/SC/VAR)`: Window to select (0 for lower, 1 for upper).
+*   **`Description`**: Selects the active window for text output. (V3+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_win`, then `window_id`. Fetch/extend.
+    2.  If `window_id` is 0 or 1, set it as active window. Cursor moves to its current position in that window.
+    3.  If windowing not supported/split, all output goes to single window.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Active output window may change.
+*   **`Error Conditions`**: Invalid type byte/var ref. `window_id` not 0 or 1.
+
+#### bm. `erase_window` (VAROP)
+
+*   **`Mnemonic`**: `erase_window`
+*   **`Opcode Value`**: `0x03ED`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_win (Operand Type Specifier)`: For `window_id`.
+    *   `window_id (LC/SC/VAR)`: Window to erase (-1 for all, 0 for lower, 1 for upper).
+*   **`Description`**: Clears the specified window(s) and moves cursor to top-left of that window. (V4+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_win`, then `window_id`. Fetch/extend.
+    2.  If -1: Erase all windows, move cursor to (1,1) of window 0.
+    3.  If 0 or 1: Erase specified window, move cursor to (1,1) of that window.
+    4.  If windowing not supported, erases the whole screen.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Screen content erased. Cursor moved.
+*   **`Error Conditions`**: Invalid type byte/var ref. Invalid `window_id`.
+
+#### bn. `erase_line` (VAROP)
+
+*   **`Mnemonic`**: `erase_line`
+*   **`Opcode Value`**: `0x03EE`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_val (Operand Type Specifier)`: For `value`.
+    *   `value (LC/SC/VAR)`: If 1, erase from cursor to end of line. (Other values undefined by spec, ZM2 treats non-1 as error or no-op).
+*   **`Description`**: Erases from cursor to end of line in current window. (V4+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_val`, then `value`. Fetch/extend.
+    2.  If `value == 1`, erase from cursor to end of line. Cursor position does not change.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Part of a line is erased.
+*   **`Error Conditions`**: Invalid type byte/var ref.
+
+#### bo. `set_cursor` (VAROP)
+
+*   **`Mnemonic`**: `set_cursor`
+*   **`Opcode Value`**: `0x03EF`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_row (Operand Type Specifier)`: For `row`.
+    *   `row (LC/SC/VAR)`: Screen row (1-based).
+    *   `type_byte_col (Operand Type Specifier)`: For `column`.
+    *   `column (LC/SC/VAR)`: Screen column (1-based).
+    *   (Optional, V5+) `type_byte_win (Operand Type Specifier)`: For `window_id`.
+    *   (Optional, V5+) `window_id (LC/SC/VAR)`: Window to set cursor in. Defaults to current window if omitted.
+*   **`Description`**: Moves cursor to (`row`, `column`) in current (or specified) window. (V4+)
+*   **`Operation Details`**:
+    1.  Read `row` and `column` with their type bytes.
+    2.  Optionally, check for and read `window_id` (if ZM2 supports this V5+ extension). If not provided, use current window.
+    3.  Move cursor. If window 1, `row` cannot be set (always 1).
+    4.  Ignored if interpreter doesn't support cursor setting.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Cursor position changed.
+*   **`Error Conditions`**: Invalid types/var refs. Position out of bounds.
+
+#### bp. `get_cursor` (VAROP)
+
+*   **`Mnemonic`**: `get_cursor`
+*   **`Opcode Value`**: `0x03F0`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
+    *   `array_addr (LC/SC/VAR)`: Byte address of an array to store cursor position.
+*   **`Description`**: Stores current cursor position (row and column) into `array_addr`. (V4+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_arr`, then `array_addr`. Fetch if VAR.
+    2.  Get current cursor `row` and `column` in the active window.
+    3.  Store `row` at `array_addr` (as a 64-bit word).
+    4.  Store `column` at `array_addr + 8` (as a 64-bit word).
+    5.  If interpreter cannot determine cursor pos, it should store plausible values (e.g., 1,1) or specific error indicators if array format allows.
+*   **`Stores Result To`**: Row and column stored in memory at `array_addr` and `array_addr+8`.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**: Invalid type byte/var ref. `array_addr` invalid.
+
+#### bq. `set_text_style` (VAROP)
+
+*   **`Mnemonic`**: `set_text_style`
+*   **`Opcode Value`**: `0x03F1`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_style (Operand Type Specifier)`: For `style_flags`.
+    *   `style_flags (LC/SC/VAR)`: Bitmask for styles (reverse, bold, italic, fixed-pitch).
+*   **`Description`**: Sets current text style for output. (V4+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_style`, then `style_flags`. Fetch/extend.
+    2.  Bit flags: 0=roman, 1=reverse, 2=bold, 4=italic, 8=fixed-pitch.
+    3.  VM attempts to apply style. If a style is unsupported, it's ignored.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Text style for subsequent output changes.
+*   **`Error Conditions`**: Invalid type byte/var ref.
+
+#### br. `buffer_mode` (VAROP)
+
+*   **`Mnemonic`**: `buffer_mode`
+*   **`Opcode Value`**: `0x03F2`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_mode (Operand Type Specifier)`: For `mode`.
+    *   `mode (LC/SC/VAR)`: If 0, disable buffered output. If 1, enable.
+*   **`Description`**: Controls whether text output is buffered or printed immediately. (V4+)
+*   **`Operation Details`**:
+    1.  Read `type_byte_mode`, then `mode`. Fetch/extend.
+    2.  If `mode == 1`, text output may be buffered by interpreter until newline, screen full, or read.
+    3.  If `mode == 0`, output is unbuffered (flushed immediately).
+    4.  Mainly affects performance on slow devices; less critical for ZM2 but defined for compatibility.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Interpreter output buffering behavior might change.
+*   **`Error Conditions`**: Invalid type byte/var ref.
+
+#### bs. `output_stream` (VAROP)
+
+*   **`Mnemonic`**: `output_stream`
+*   **`Opcode Value`**: `0x03F3`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_stream (Operand Type Specifier)`: For `stream_id`.
+    *   `stream_id (LC/SC/VAR)`: Stream number (1=screen, 2=transcript, 3=memory table, 4=script output for command file). Negative to close.
+    *   (If `stream_id == 3`) `type_byte_table (Operand Type Specifier)`: For `table_addr`.
+    *   (If `stream_id == 3`) `table_addr (LC/SC/VAR)`: Byte address of table to print to. First word stores length.
+*   **`Description`**: Selects or deselects output streams. (V3+)
+*   **`Operation Details`**:
+    1.  Read `stream_id`.
+    2.  Positive `stream_id`: Selects stream.
+        *   1: Screen. Always on.
+        *   2: Transcript. If `Transcripting` flag not set in header, this fails silently or errors.
+        *   3: Memory table. Read `table_addr`. Output is written to this table. First 64-bit word at `table_addr` must be max capacity; VM updates it with current length.
+        *   4: Command file output (if enabled).
+    3.  Negative `stream_id`: Deselects stream `abs(stream_id)`. Cannot deselect stream 1.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Output may be redirected.
+*   **`Error Conditions`**: Invalid types/var refs. Invalid stream ID. Invalid `table_addr` or capacity for stream 3.
+
+#### bt. `input_stream` (VAROP)
+
+*   **`Mnemonic`**: `input_stream`
+*   **`Opcode Value`**: `0x03F4`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_stream (Operand Type Specifier)`: For `stream_id`.
+    *   `stream_id (LC/SC/VAR)`: Stream number (0=keyboard, 1=command file).
+*   **`Description`**: Selects input stream (keyboard or command file). (V3+)
+*   **`Operation Details`**:
+    1.  Read `stream_id`.
+    2.  0: Keyboard input.
+    3.  1: Command file input (if available). If not, error or ignore.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Input source changes.
+*   **`Error Conditions`**: Invalid type/var ref. Command file not available for stream 1.
+
+#### bu. `sound_effect` (VAROP)
+
+*   **`Mnemonic`**: `sound_effect`
+*   **`Opcode Value`**: `0x03F5`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_num (Operand Type Specifier)`: For `sound_number`.
+    *   `sound_number (LC/SC/VAR)`: Sound effect ID.
+    *   `type_byte_effect (Operand Type Specifier)`: For `effect`.
+    *   `effect (LC/SC/VAR)`: 1=prepare, 2=play, 3=stop, 4=unload.
+    *   `type_byte_vol (Operand Type Specifier)`: For `volume_and_repeats`.
+    *   `volume_and_repeats (LC/SC/VAR)`: Volume (high byte), repeats (low byte).
+    *   (Optional) `type_byte_routine (Operand Type Specifier)`: For `sound_finished_routine_paddr`.
+    *   (Optional) `sound_finished_routine_paddr (PADDR)`: Routine to call when sound finishes.
+*   **`Description`**: Manages sound effects. (V4+) Often optional in interpreters.
+*   **`Operation Details`**:
+    1.  Read operands.
+    2.  VM attempts to perform action. If sound not supported, mostly NOP.
+    3.  `sound_number`: 1 for beep, 2 for user-defined sound. Higher numbers are game-specific.
+    4.  `effect`: Prepare (load), Play, Stop, Unload (release resources).
+    5.  `volume_and_repeats`: Volume 1-8 (or 0-255). Repeats 0-255 (0=infinite, 1=once).
+    6.  `sound_finished_routine_paddr`: If provided (and non-zero), resolve this `RoutinePADDR` (as per Section 4.A.0) to an absolute address and the VM will attempt to call the routine at this address when the sound effect finishes playing.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Sound may play or stop.
+*   **`Error Conditions`**: Invalid types/var refs/paddr. Sound system errors.
+
+#### bv. `read_char` (VAROP)
+
+*   **`Mnemonic`**: `read_char`
+*   **`Opcode Value`**: `0x03F6`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_one (Operand Type Specifier)`: For `input_device_ignored`. (Typically 1, historical).
+    *   `input_device_ignored (LC/SC/VAR)`: Usually 1.
+    *   (Optional) `type_byte_timeout (Operand Type Specifier)`: For `timeout_seconds`.
+    *   (Optional) `timeout_seconds (LC/SC/VAR)`: Timeout value.
+    *   (Optional) `type_byte_routine (Operand Type Specifier)`: For `timeout_routine_paddr`.
+    *   (Optional) `timeout_routine_paddr (PADDR)`: Routine to call on timeout.
+    *   `store_variable_ref (Variable Reference)`: Stores the character code read.
+*   **`Description`**: Reads a single character from the current input stream. (V4+)
+*   **`Operation Details`**:
+    1.  Read `input_device_ignored`. (ZM2 ignores this, reads from current input stream).
+    2.  If timeout operands provided: Read them. Resolve `timeout_routine_paddr` (a `RoutinePADDR` as per Section 4.A.0) to an absolute address. Start timer. If timeout occurs before char read, call the routine at the resolved address (if `timeout_routine_paddr` was non-zero and resolved successfully) and the result stored is 0.
+    3.  Read one character.
+    4.  Store ZSCII/Unicode code into `store_variable_ref`. If timeout occurred, 0 is stored.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Waits for input.
+*   **`Error Conditions`**: Invalid types/var refs/paddr. I/O error.
+
+#### bw. `scan_table` (VAROP)
+
+*   **`Mnemonic`**: `scan_table`
+*   **`Opcode Value`**: `0x03F7`
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_val (Operand Type Specifier)`: For `value_to_find`.
+    *   `value_to_find (LC/SC/VAR)`: Value to search for.
+    *   `type_byte_table (Operand Type Specifier)`: For `table_addr`.
+    *   `table_addr (LC/SC/VAR)`: Address of the table.
+    *   `type_byte_len (Operand Type Specifier)`: For `num_items`.
+    *   `num_items (LC/SC/VAR)`: Number of items to search in the table.
+    *   (Optional) `type_byte_form (Operand Type Specifier)`: For `form_byte`.
+    *   (Optional) `form_byte (LC/SC/VAR)`: Default 0x82 (words). Bit 7=0 for bytes, 1 for words. Bits 0-6 length of field.
+    *   `store_variable_ref (Variable Reference)`: Stores address of found item, or 0.
+    *   `branch_data?`: Branch if found.
+*   **`Description`**: Searches a table for `value_to_find`. (V4+)
+*   **`Operation Details`**:
+    1.  Read operands. `form_byte` defaults to 0x82 (scan 64-bit words).
+    2.  Iterate from `table_addr` for `num_items`. Each item is `form_byte & 0x7F` bytes long.
+    3.  If `(form_byte & 0x80) == 0` (bytes): Compare `value_to_find` (lowest byte if `value_to_find` is wider than field) with each byte field.
+    4.  If `(form_byte & 0x80) != 0` (words): Compare `value_to_find` (relevant bytes if field < 8 bytes, else full 64-bit) with each word field.
+    5.  If found: Store item's address in `store_variable_ref`. Branch.
+    6.  If not found: Store 0. Continue after branch data.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Value found in table.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**: Invalid types/var refs. Invalid table address or form.
+
+#### bx. `print_unicode` (VAROP)
+
+*   **`Mnemonic`**: `print_unicode`
+*   **`Opcode Value`**: `0x03F8` (Example ZM2, distinct from `print_char`)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: For `unicode_char_code`.
+    *   `unicode_char_code (LC/SC/VAR)`: The 32-bit Unicode code point to print.
+*   **`Description`**: Prints a Unicode character.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `unicode_char_code`. Fetch/extend.
+    2.  The VM attempts to print the character corresponding to `unicode_char_code`.
+    3.  If `StrictZSCIICompatMode` is ON, VM attempts to transliterate to ZSCII or print '?'.
+    4.  If the character cannot be printed, '?' is typically output.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Character printed.
+*   **`Error Conditions`**: Invalid type/var ref. I/O error.
+
+#### by. `check_unicode` (VAROP)
+
+*   **`Mnemonic`**: `check_unicode`
+*   **`Opcode Value`**: `0x03F9` (Example ZM2)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte (Operand Type Specifier)`: For `unicode_char_code`.
+    *   `unicode_char_code (LC/SC/VAR)`: The 32-bit Unicode code point to check.
+    *   `store_variable_ref (Variable Reference)`: Stores result.
+*   **`Description`**: Checks if the current output stream(s) can print the given Unicode character.
+*   **`Operation Details`**:
+    1.  Read `type_byte`, then `unicode_char_code`. Fetch/extend.
+    2.  Result:
+        *   1: Character can be printed accurately.
+        *   0: Cannot be printed (will be substituted, e.g., with '?').
+        *   2: Can be approximated/transliterated.
+    3.  Store result in `store_variable_ref`.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**: Invalid type/var ref.
+
+#### bz. `store` (VAROP)
+
+*   **`Mnemonic`**: `store`
+*   **`Opcode Value`**: `0x03FA` (Example ZM2, distinct from 2OP `store` in ZSpec < V5)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `variable_ref (Variable Reference)`: Variable to store into (1-byte specifier).
+    *   `type_byte_val (Operand Type Specifier)`: For `value`.
+    *   `value (LC/SC/VAR)`: The 64-bit value to store.
+*   **`Description`**: Stores `value` into `variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `variable_ref` (1 byte).
+    2.  Read `type_byte_val`, then `value`. Fetch/extend.
+    3.  Store `value` into the variable specified by `variable_ref`.
+*   **`Stores Result To`**: `variable_ref`.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Target variable is modified.
+*   **`Error Conditions`**: Invalid `variable_ref`. Invalid type byte or var ref for `value`.
+
+#### ca. `tokenise` (VAROP)
+
+*   **`Mnemonic`**: `tokenise`
+*   **`Opcode Value`**: `0x03FB` (Example ZM2)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_text (Operand Type Specifier)`: For `text_buffer_addr`.
+    *   `text_buffer_addr (LC/SC/VAR)`: Address of ZSCII text to tokenise.
+    *   `type_byte_parse (Operand Type Specifier)`: For `parse_buffer_addr`.
+    *   `parse_buffer_addr (LC/SC/VAR)`: Address of buffer to store parse data.
+    *   (Optional) `type_byte_dict (Operand Type Specifier)`: For `dictionary_addr`.
+    *   (Optional) `dictionary_addr (LC/SC/VAR)`: Address of dictionary to use (default from header).
+    *   (Optional) `type_byte_flag (Operand Type Specifier)`: For `flag_ignore_unknowns`.
+    *   (Optional) `flag_ignore_unknowns (LC/SC/VAR)`: If non-zero, don't fill parse buffer slots for unknown words.
+*   **`Description`**: Tokenises text from `text_buffer_addr` into `parse_buffer_addr`, using dictionary.
+*   **`Operation Details`**:
+    1.  Read operands. Use header dictionary if `dictionary_addr` is 0 or omitted.
+    2.  Similar to `sread`'s parsing phase:
+        *   `text_buffer_addr` format: Max length (byte), actual length (byte), ZSCII text.
+        *   `parse_buffer_addr` format: Max words (byte), then receives num_words (byte), then word entries (64-bit dict_addr, 8-bit len, 32-bit offset).
+    3.  Performs tokenisation based on dictionary word separators and entries.
+*   **`Stores Result To`**: None directly (parse data in `parse_buffer_addr`).
+*   **`Branches If`**: None.
+*   **`Side Effects`**: `parse_buffer_addr` is modified.
+*   **`Error Conditions`**: Invalid types/var refs. Invalid buffer addresses or formats.
+
+#### cb. `encode_text` (VAROP)
+
+*   **`Mnemonic`**: `encode_text`
+*   **`Opcode Value`**: `0x03FC` (Example ZM2)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_zscii (Operand Type Specifier)`: For `zscii_text_addr`.
+    *   `zscii_text_addr (LC/SC/VAR)`: Address of null-terminated ZSCII text.
+    *   `type_byte_len (Operand Type Specifier)`: For `length`.
+    *   `length (LC/SC/VAR)`: Number of ZSCII characters to encode.
+    *   `type_byte_from (Operand Type Specifier)`: For `from_offset`.
+    *   `from_offset (LC/SC/VAR)`: Starting offset in `zscii_text_addr`.
+    *   `type_byte_encoded (Operand Type Specifier)`: For `encoded_text_buffer_addr`.
+    *   `encoded_text_buffer_addr (LC/SC/VAR)`: Buffer to store Z-encoded text.
+*   **`Description`**: Encodes ZSCII text into Z-Machine string format (6 bytes per 4 chars). (V5+)
+*   **`Operation Details`**:
+    1.  Read operands.
+    2.  Encode `length` chars from `zscii_text_addr + from_offset` into `encoded_text_buffer_addr`.
+    3.  Uses standard Z-Machine text encoding algorithm (A0, A1, A2 character sets, shifts).
+*   **`Stores Result To`**: None directly (encoded data in `encoded_text_buffer_addr`).
+*   **`Branches If`**: None.
+*   **`Side Effects`**: `encoded_text_buffer_addr` modified.
+*   **`Error Conditions`**: Invalid types/var refs. Buffer overlaps or overflows.
+
+#### cc. `copy_table` (VAROP)
+
+*   **`Mnemonic`**: `copy_table`
+*   **`Opcode Value`**: `0x03FD` (Example ZM2)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_src (Operand Type Specifier)`: For `source_table_addr`.
+    *   `source_table_addr (LC/SC/VAR)`: Address of source table.
+    *   `type_byte_dst (Operand Type Specifier)`: For `destination_table_addr`.
+    *   `destination_table_addr (LC/SC/VAR)`: Address of destination table.
+    *   `type_byte_len (Operand Type Specifier)`: For `length_bytes`.
+    *   `length_bytes (LC/SC/VAR)`: Number of bytes to copy. Positive: copy forwards. Negative: copy backwards. Zero: do nothing.
+*   **`Description`**: Copies `abs(length_bytes)` bytes from source to destination. (V5+)
+*   **`Operation Details`**:
+    1.  Read operands.
+    2.  If `length_bytes > 0`: Copy `length_bytes` from `source_table_addr` to `destination_table_addr` (memmove semantics, handles overlap correctly by copying low-to-high).
+    3.  If `length_bytes < 0`: Copy `abs(length_bytes)` from `source_table_addr` to `destination_table_addr` (memmove semantics, handles overlap by copying high-to-low). Destination can be 0 to zero out source table if `source_table_addr` is in dynamic memory. (Original spec: if dest is 0, source is zeroed. ZM2: if dest is 0, treat as error or NOP to avoid ambiguity). ZM2: If `destination_table_addr` is 0, this is an error.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Memory at destination (and potentially source if zeroing was allowed) is modified.
+*   **`Error Conditions`**: Invalid types/var refs. Memory out of bounds. `destination_table_addr` is 0. Overlap with non-dynamic memory if zeroing.
+
+#### cd. `print_table` (VAROP)
+
+*   **`Mnemonic`**: `print_table`
+*   **`Opcode Value`**: `0x03FE` (Example ZM2)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_addr (Operand Type Specifier)`: For `table_addr`.
+    *   `table_addr (LC/SC/VAR)`: Address of table of ZSCII characters.
+    *   `type_byte_width (Operand Type Specifier)`: For `width`.
+    *   `width (LC/SC/VAR)`: Width of each row in characters.
+    *   `type_byte_height (Operand Type Specifier)`: For `height`.
+    *   `height (LC/SC/VAR)`: Number of rows (default 1).
+    *   (Optional) `type_byte_skip (Operand Type Specifier)`: For `skip_chars_per_row`.
+    *   (Optional) `skip_chars_per_row (LC/SC/VAR)`: Number of bytes to skip after printing each row (default 0).
+*   **`Description`**: Prints a table of ZSCII characters. (V5+)
+*   **`Operation Details`**:
+    1.  Read operands. `height` defaults to 1. `skip_chars_per_row` defaults to 0.
+    2.  For each row from 1 to `height`:
+        *   Print `width` ZSCII characters from current `table_addr`.
+        *   Advance `table_addr` by `width`.
+        *   Advance `table_addr` by `skip_chars_per_row`.
+        *   Print a newline.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: None.
+*   **`Side Effects`**: Text printed.
+*   **`Error Conditions`**: Invalid types/var refs. Memory out of bounds.
+
+#### ce. `check_arg_count` (VAROP)
+
+*   **`Mnemonic`**: `check_arg_count`
+*   **`Opcode Value`**: `0x03FF` (Example ZM2)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**:
+    *   `type_byte_arg_num (Operand Type Specifier)`: For `argument_number`.
+    *   `argument_number (LC/SC/VAR)`: 1-based argument index.
+    *   `branch_data?`: Branch information.
+*   **`Description`**: Branches if the current routine was called with at least `argument_number` arguments. (V5+)
+*   **`Operation Details`**:
+    1.  Read `argument_number`.
+    2.  Check the count of arguments passed to the current routine (stored in stack frame).
+    3.  If `count_of_args_passed >= argument_number`, branch.
+*   **`Stores Result To`**: None.
+*   **`Branches If`**: Current routine received at least `argument_number` arguments.
+    *   Branch information encoding is standard.
+*   **`Side Effects`**: PC may be modified.
+*   **`Error Conditions`**: Invalid type/var ref. `argument_number` is 0 or invalid.
 
 ### 4. Note on Completeness
 
