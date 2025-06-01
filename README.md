@@ -4,27 +4,29 @@
 
 ## 1. Overview
 
-Z-Machine Mark 2 is a modernized version of the original Z-machine, designed for text-only interactive fiction games. It operates as a 128-bit virtual machine, allowing for large data handling and future scalability. It integrates with a Large Language Model (LLM) via Hugging Face's API for natural language understanding and generation, aiming to create a more immersive and interactive experience.
+Z-Machine Mark 2 is a modernized version of the original Z-machine, designed for text-only interactive fiction games. It operates as a 64-bit virtual machine, allowing for large data handling and future scalability. It integrates with a Large Language Model (LLM) via Hugging Face's API for natural language understanding and generation, aiming to create a more immersive and interactive experience.
 
 ## 2. Memory Model
 
--   **Word Size**: Each word is 128 bits (16 bytes).
--   **Address Space**: 128-bit addressing, providing 2<sup>128</sup> words of addressable memory.
+-   **Word Size**: Each word is 64 bits (8 bytes).
+-   **Address Space**: 64-bit addressing, providing 2<sup>64</sup> words of addressable memory.
 -   **Memory Layout**:
     -   **Header**: Contains metadata (version, release number, memory map).
-    -   **Code Section**: Stores game logic routines. Instructions can span multiple 128-bit words.
+    -   **Code Section**: Stores game logic routines. Instructions can span multiple 64-bit words.
     -   **Data Sections**: Includes objects, text abbreviations, and dynamic memory.
--   **Byte-Addressable**: Remains byte-addressable, with 128-bit word granularity.
+-   **Byte-Addressable**: Remains byte-addressable, with 64-bit word granularity.
 
 ## 3. Instruction Set
 
--   **Command Size**: Each opcode is 128 bits long.
+-   **Command Size**: Each opcode is 64 bits long.
 -   **Opcode Categories**:
-    -   **Standard Opcodes**: Adapted from the original Z-machine for 128-bit operands (e.g., arithmetic, control flow, object manipulation, input/output).
-    -   **Extended Opcodes for LLM Integration**:
-        -   `call_llm_parse`: Sends player input and game state to LLM for parsing.
-        -   `call_llm_generate`: Requests LLM to generate descriptive text.
--   **Version Support**: Designed for backward compatibility with earlier Z-machine concepts, extended for 128-bit operations.
+    -   **Standard Opcodes**: Adapted from the original Z-machine for 64-bit operands (e.g., arithmetic, control flow, object manipulation, input/output).
+    -   **Extended Opcodes for LLM Integration (Asynchronous)**:
+        -   `start_llm_parse`: Initiates an asynchronous LLM parsing task.
+        -   `start_llm_generate`: Initiates an asynchronous LLM text generation task.
+        -   `check_llm_status`: Polls the status of a pending LLM request.
+        -   `get_llm_result`: Retrieves the result of a successful LLM operation.
+-   **Version Support**: Designed for backward compatibility with earlier Z-machine concepts, extended for 64-bit operations.
 
 ## 4. LLM Integration
 
@@ -40,7 +42,7 @@ Z-Machine Mark 2 is a modernized version of the original Z-machine, designed for
 
 ## 5. Game State Management
 
--   **State Representation**: Game state (variables, objects, locations, player status) maintained in 128-bit words.
+-   **State Representation**: Game state (variables, objects, locations, player status) maintained in 64-bit words.
 -   **State Updates**: The VM executes game logic based on parsed player actions, updating the state accordingly and ensuring persistence.
 
 ## 6. Player Interaction
@@ -64,7 +66,7 @@ Z-Machine Mark 2 is a modernized version of the original Z-machine, designed for
 
 -   **Enhanced Interactivity**: More natural and flexible player inputs.
 -   **Dynamic Text Generation**: Varied and engaging descriptions.
--   **Future-Proofing**: 128-bit architecture for scalability.
+-   **Future-Proofing**: 64-bit architecture provides vast scalability for the foreseeable future.
 -   **Portability**: Runs on any platform with a compatible interpreter, plus AI features.
 
 ## 9. Challenges and Considerations
@@ -72,13 +74,13 @@ Z-Machine Mark 2 is a modernized version of the original Z-machine, designed for
 -   **LLM Reliability**: Potential for inconsistent outputs; requires safeguards.
 -   **Performance**: API calls may introduce latency.
 -   **Training and Fine-Tuning**: LLM needs domain-specific training.
--   **Complexity**: 128-bit architecture might be overkill for text-based games.
+-   **Complexity**: While 64-bit is a significant step up, it aligns well with modern hardware, making it less complex to implement than 128-bit.
 
 ## 10. Implementation Notes
 
 -   **Choosing an LLM**: Use a pre-trained model from Hugging Face, fine-tuned on interactive fiction data.
 -   **API Integration**: Leverage Hugging Face's Inference API.
--   **Game Development Tools**: Extend tools like Inform for 128-bit operations and LLM integration.
+-   **Game Development Tools**: Extend tools like Inform for 64-bit operations and LLM integration.
 -   **Testing**: Test with existing games for compatibility and performance.
 
 ## 11. Key Citations
