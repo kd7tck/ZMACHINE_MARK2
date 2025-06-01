@@ -93,7 +93,8 @@ The header is a fixed-size block at the beginning of the memory (e.g., the first
 | 124            | 8            | `context_globals_list_ptr`     | Pointer to a null-terminated list of 1-byte global variable indices (0-239) for `get_context_as_json`. 0 if not used. |
 | 132            | 8            | `recent_events_buffer_ptr`     | Pointer to the start of a buffer for recent event strings (for `get_context_as_json`). 0 if not used.         |
 | 140            | 8            | `recent_events_count_ptr`      | Pointer to a 1-byte variable holding the count of valid event strings in `recent_events_buffer_ptr`. 0 if not used. |
-| 148            | 876          | `reserved`                     | Reserved for future expansion. Must be initialized to zero.                                                |
+| 148            | 8            | `property_defaults_table_start`| Byte address of the property defaults table within the Static Data Section. 0 if not used or if defaults are always 0. |
+| 156            | 868          | `reserved`                     | Reserved for future expansion. Must be initialized to zero.                                                |
 | **Total Size** | **1024**     |                                |                                                                                                            |
 
 **Code and Data Section Organization and Access:**
@@ -173,6 +174,7 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
         *   **Dictionary**: A list of ZSCII-encoded words recognized by the traditional parser (if used as a fallback). Each word is typically fixed-length, padded with nulls. Associated with data like word ID or pointers to grammar tokens.
         *   **Text Abbreviation Table**: A table of pointers to frequently used Z-encoded strings. Used by `print_abbrev` opcode.
         *   **Z-Encoded Strings**: All game text (room descriptions, messages, object names, etc.) is stored as ZSCII strings, potentially using Z-Machine string compression techniques (e.g., Huffman-like encoding of character pairs, references to abbreviation table).
+        *   **Property Defaults Table**: An array of 64-bit values, indexed by (Property ID - 1). Used by `get_prop` when a property is not found on an object. Pointed to by `property_defaults_table_start` in the Header. If `property_defaults_table_start` is 0, all default property values are assumed to be 0.
         *   **LLM API Configuration Strings**: Null-terminated strings for `llm_api_endpoint_ptr` and `llm_parameters_ptr` if these are used.
         *   Other static arrays, tables, or data structures defined by the game authoring system.
     *   **Encoding**: Binary data. Object IDs are 64-bit. Pointers within this section (e.g., from object to its properties) are absolute byte offsets from the start of the Static Data Section or the start of the file.
@@ -225,62 +227,56 @@ Operands for opcodes are fetched according to type specifiers. Common types incl
 
 **Standard Opcodes (Illustrative List - Not Exhaustive):**
 
-This list provides examples. A full list will be maintained in a separate ZM2_Opcodes.md document. All operations are on 64-bit values unless specified.
+This list provides a few examples of standard opcodes adapted for ZM2, reflecting the systematic numbering scheme. For a more comprehensive list and detailed specifications of all opcodes (including behavior changes from Z-Spec 1.1 for 64-bit operations), refer to Section 4.A "Detailed Opcode Specification" and the supplementary `ZM2_Opcodes.md` document (once populated). All operations are on 64-bit values unless specified.
 
-*   **0OP (No Operands):**
-    *   `rtrue`: Return true (1) from the current routine.
-    *   `rfalse`: Return false (0) from the current routine.
-    *   `print`: Prints the Z-encoded string at the current PC, then advances PC.
-    *   `newline`: Prints a newline character.
-    *   `quit`: Terminates the game.
-    *   `save`: (Branch) Saves the game state. Branches if successful.
-    *   `restore`: (Branch) Restores the game state. Branches if successful. (Note: restore does not return, unlike ZSpec 1.1)
-    *   `nop`: No operation.
+*   **0OP (No Operands):** Example Range `0x0000 - 0x00FF`
+    *   `rtrue` (`0x0000`): Return true (1) from the current routine.
+    *   `rfalse` (`0x0001`): Return false (0) from the current routine.
+    *   `print` (`0x0002`): Prints the Z-encoded string at the current PC, then advances PC.
+    *   `newline` (`0x0003`): Prints a newline character.
+    *   `save` (`0x0004`): (Branch) Saves the game state. Branches if successful.
+    *   `restore` (`0x0005`): (Branch) Restores the game state. Branches if successful.
+    *   `quit` (`0x0006`): Terminates the game.
+    *   `nop` (`0x0007`): No operation.
 
-*   **1OP (One Operand):**
-    *   `jz (value)`: Jump if value is zero. Operand is the value to test. Branch data follows.
-    *   `get_sibling (object_id) -> (result)`: Stores sibling object ID.
-    *   `get_child (object_id) -> (result)`: Stores child object ID.
-    *   `get_parent (object_id) -> (result)`: Stores parent object ID.
-    *   `get_prop_len (property_address) -> (result)`: Stores length of property data.
-    *   `inc (variable_ref)`: Increments variable.
-    *   `dec (variable_ref)`: Decrements variable.
-    *   `print_addr (byte_address)`: Prints Z-encoded string at the given byte address.
-    *   `print_obj (object_id)`: Prints short name of the object.
-    *   `ret (value)`: Return value from current routine.
-    *   `pop (variable_ref)`: Pops value from stack into variable (if variable_ref is 0, effectively discards top of stack).
+*   **1OP (One Operand):** Example Range `0x0100 - 0x01FF`
+    *   `jz` (`0x0100`): Jump if value is zero. Operand is the value to test. Branch data follows.
+    *   `get_sibling` (`0x0101`): Stores sibling object ID.
+    *   `get_child` (`0x0102`): Stores child object ID.
+    *   `get_parent` (`0x0103`): Stores parent object ID.
+    *   `get_prop_len` (`0x0104`): Stores length of property data.
+    *   `inc` (`0x0105`): Increments variable.
+    *   `dec` (`0x0106`): Decrements variable.
+    *   `print_addr` (`0x0107`): Prints Z-encoded string at the given byte address.
+    *   `print_obj` (`0x0108`): Prints short name of the object.
+    *   `ret` (`0x0109`): Return value from current routine.
+    *   `pop` (`0x010A`): Pops value from stack into variable.
 
-*   **2OP (Two Operands):**
-    *   `je (value1, value2)`: Jump if value1 equals value2. Branch data follows.
-    *   `jl (value1, value2)`: Jump if value1 < value2. Branch data follows.
-    *   `jg (value1, value2)`: Jump if value1 > value2. Branch data follows.
-    *   `add (a, b) -> (result)`: a + b.
-    *   `sub (a, b) -> (result)`: a - b.
-    *   `mul (a, b) -> (result)`: a * b.
-    *   `div (a, b) -> (result)`: a / b (integer division).
-    *   `mod (a, b) -> (result)`: a % b.
-    *   `loadw (array_addr, word_index) -> (result)`: Reads word from array. (array_addr is byte address).
-    *   `storew (array_addr, word_index, value)`: Writes word to array.
-    *   `loadb (array_addr, byte_index) -> (result)`: Reads byte from array (zero-extended to 64-bit).
-    *   `storeb (array_addr, byte_index, value)`: Writes byte to array (lowest 8 bits of value).
-    *   `get_prop (object_id, property_id) -> (result)`: Reads property value.
-    *   `put_prop (object_id, property_id, value)`: Writes property value.
-    *   `test_attr (object_id, attribute_id)`: (Branch) Tests if attribute is set.
-    *   `set_attr (object_id, attribute_id)`: Sets an attribute.
-    *   `clear_attr (object_id, attribute_id)`: Clears an attribute.
-    *   `insert_obj (object_id, destination_id)`: Moves object into destination.
-    *   `remove_obj (object_id)`: Removes object from its parent.
+*   **2OP (Two Operands):** Example Range `0x0200 - 0x02FF`
+    *   `je` (`0x0200`): Jump if value1 equals value2. Branch data follows.
+    *   `jl` (`0x0201`): Jump if value1 < value2. Branch data follows.
+    *   `jg` (`0x0202`): Jump if value1 > value2. Branch data follows.
+    *   `add` (`0x0203`): a + b.
+    *   `sub` (`0x0204`): a - b.
+    *   `mul` (`0x0205`): a * b.
+    *   `div` (`0x0206`): a / b (integer division).
+    *   `mod` (`0x0207`): a % b.
+    *   `loadw` (`0x0208`): Reads word from array.
+    *   `get_prop` (`0x020A`): Reads property value.
 
-*   **VAROP (Variable Number of Operands):**
-    *   `call (routine_paddr, arg1, ..., argN) -> (result)`: Calls a routine. `routine_paddr` is a packed address.
-    *   `store (variable_ref, value)`: Stores value in variable.
-    *   `print_unicode (char_code)`: Prints a Unicode character corresponding to the given code point. (Can be VAROP for multiple chars or a sequence).
-    *   `check_unicode (char_code) -> (result)`: Checks if current output stream supports the Unicode character. (Returns 1 if supported, 0 if not, 2 if maybe/transliteration possible).
-    *   `sread (text_buffer_addr, parse_buffer_addr)`: Reads player input from the console into `text_buffer_addr`. If `parse_buffer_addr` is non-zero, it may also perform a traditional dictionary-based tokenization similar to the original Z-Machine specification, storing results in `parse_buffer_addr`. This opcode **does not** directly interact with the LLM. Game logic is responsible for subsequently calling LLM parsing opcodes (e.g., `start_llm_parse`) with the content of `text_buffer_addr` if LLM-based parsing is desired.
-    *   `aread (text_buffer_addr, parse_buffer_addr, timeout_routine_paddr, timeout_seconds) -> (result)`: Async read with timeout. (Similar to `sread` regarding LLM non-interaction).
+*   **VAROP (Variable Number of Operands):** Example Range `0x0300 - 0x03FF`
+    *   `call` (`0x0300`): Calls a routine. `routine_paddr` is a packed address.
+    *   `store` (`0x0301`): Stores value in variable (ZM2 version).
+    *   `print_unicode` (`0x0302`): Prints a Unicode character.
+    *   `check_unicode` (`0x0303`): Checks if current output stream supports the Unicode character.
+    *   `sread` (`0x0304`): Reads player input.
+
+*   **EXT (Extended for ZM2):** Example Range `0xEE00 - 0xEFFF`
+    *   These opcodes are specific to Z-Machine Mark 2, primarily for LLM integration and other advanced features. See Section 4.A.3.e onwards for examples like `start_llm_parse` (`0xEE00`).
 
 **VM Utility Opcodes:**
 
+Note: `get_context_as_json` is an EXT opcode and is detailed in Section 4.A.3.
 1.  **`get_context_as_json (object_scope_flag, max_depth, output_buffer_addr, max_output_len) -> (status_code)`**
     *   **Functionality**: Collects relevant game state information and formats it as a JSON string in the specified buffer. This is intended to help populate the `context_data_addr` for `start_llm_parse` or `start_llm_generate` calls.
     *   **Operands**:
@@ -474,13 +470,26 @@ The use of a 32-bit `PackedValue` with a `ScaleFactor` of 1 imposes an addressin
 
 Story files where targeted routines or strings reside beyond this 4GB offset from their respective section base addresses cannot use these PADDR types to refer to them and would require full 64-bit address operands or alternative mechanisms.
 
-### 1. Introduction to Opcode Specification
+**Usage Note**: Opcodes that take a `RoutinePADDR` (e.g., `call`, `timeout_routine_paddr` in `aread`, `sound_finished_routine_paddr` in `sound_effect`) expect the packed address to resolve to the beginning of executable code for a routine. Opcodes that take a `StringPADDR` (e.g., `print_paddr`) expect it to resolve to the beginning of a Z-encoded string.
 
-This section provides the detailed specification for each Z-Machine Mark 2 opcode. Opcode numbers (values) will be assigned systematically. For opcodes adapted from the Z-Machine Standard 1.1, the original numbers may be used if they fit within a new, coherent numbering scheme designed for ZM2; otherwise, a clear mapping or new number will be provided. New ZM2-specific opcodes, particularly those for LLM integration or 64-bit specific operations, will have distinct numbers.
+### 4.A.1 Preamble/Introduction to Opcode Specification
+
+For clarity and brevity in this main specification, detailed definitions will be provided for new Z-Machine Mark 2 specific opcodes (primarily in the EXT form, see Section 4.A.3.e onwards) and for standard Z-Machine opcodes whose behavior is significantly altered by the 64-bit architecture beyond simple operand size changes. For the remaining standard opcodes adapted from the Z-Machine Standard 1.1 (typically covering versions 3 to 5/6, as appropriate for a given opcode's origin), their fundamental logic remains the same as described in that standard. Implementers should refer to the Z-Machine Standard Document 1.0 or 1.1 for this original logic, with the critical understanding that for Z-Machine Mark 2, all relevant operands, addresses, memory pointers, and intermediate arithmetic calculations are expanded to 64-bits. Packed Addresses (PADDRs), where used for routine calls or string references, must be handled as described in Section 4.A.0. A comprehensive list of all opcodes, their assigned ZM2 values, operand types, and mappings to Z-Machine Standard 1.1 will ideally be maintained in a separate document: `ZM2_Opcodes.md` (currently a placeholder: a full list is not yet populated).
 
 All multi-byte values within instruction streams, including the opcode itself and any literal operands, are stored in **Big Endian** format, consistent with the overall memory model of the Z-Machine Mark 2.
 
-### 2. Opcode Definition Template
+**Systematic Opcode Numbering Scheme:**
+
+The proposed systematic opcode numbering scheme for Z-Machine Mark 2 is as follows:
+*   `0OP` (Zero Operands): Range `0x0000 - 0x00FF`
+*   `1OP` (One Operand): Range `0x0100 - 0x01FF`
+*   `2OP` (Two Operands): Range `0x0200 - 0x02FF`
+*   `VAROP` (Variable Operands): Range `0x0300 - 0x03FF`
+*   `EXT` (Extended Opcodes for ZM2): Range `0xEE00 - 0xEFFF`
+
+*Note: The `Opcode Value` fields in the following example definitions (Section 4.A.3) adhere to this proposed systematic scheme. Final assignment of all opcode values will be done in the `ZM2_Opcodes.md` document.*
+
+### 4.A.2 Opcode Definition Template
 
 Each opcode will be defined using the following structure:
 
@@ -497,7 +506,7 @@ Each opcode will be defined using the following structure:
     *   `operand1 (type)`: Name and type of the first operand (e.g., `value (Small Constant/Variable)`). Types can be Small Constant (SC), Large Constant (LC), Variable Reference (VAR), Packed Address (PADDR), Address (ADDR - which itself could be LC or VAR).
     *   `operand2 (type)`, ... `operandN (type)`: Subsequent operands.
     *   `store_variable_ref? (Variable Reference)`: Indicates if a variable reference for storing the result follows.
-    *   `branch_data?`: Indicates if branch information follows the opcode and its operands.
+    *   `branch_data?`: Indicates if branch information follows the opcode and its operands. See Section 4.A.2.1 "Standard Branch Data Format" for details on this structure.
 *   **`Description`**: A concise summary of what the opcode does.
 *   **`Operation Details`**: A step-by-step description of the opcode's logic. This includes:
     *   How operands are read from the instruction stream or memory.
@@ -509,12 +518,42 @@ Each opcode will be defined using the following structure:
 *   **`Side Effects`**: Any other changes to the VM state not covered by result storage or branching (e.g., modification of status flags, turn counters, I/O operations).
 *   **`Error Conditions`**: Specific errors the opcode might trigger (e.g., division by zero, invalid object ID, stack overflow/underflow, address out of bounds).
 
-### 3. Example Opcode Definitions
+#### 4.A.2.1 Standard Branch Data Format
+
+When an opcode indicates it uses `branch_data`, this data immediately follows the opcode and its main operands in the instruction stream. This data determines whether a branch is taken and where execution should jump to. The format is as follows:
+
+1.  **Branch Byte 1 (BB1)**: The first byte of the branch data.
+    *   **Bit 7 (Sense Bit)**: If this bit is 1, the branch occurs if the opcode's condition is true. If this bit is 0, the branch occurs if the opcode's condition is false. Many opcodes have an implicit condition (e.g., `jz` branches if zero, so its effective condition is "value is zero"; the sense bit should typically be 1 for `jz`).
+    *   **Bit 6 (Offset Length Bit)**:
+        *   If 0: The branch offset is a signed 8-bit value, contained in the next byte (Branch Byte 2).
+        *   If 1: The branch offset is a signed 16-bit value, contained in the next two bytes (Branch Byte 2 and Branch Byte 3), stored in Big Endian order.
+    *   **Bits 0-5**: These bits are part of the offset if Bit 6 is 1 (forming the top 6 bits of a 14-bit offset in original Z-Machine, but ZM2 simplifies this). For ZM2, if Bit 6 is 1 (16-bit offset), Bits 0-5 of BB1 are ignored. If Bit 6 is 0 (8-bit offset), Bits 0-5 of BB1 are also ignored. (This simplifies ZM2 by removing the 14-bit offset form, using either 8-bit or 16-bit offsets directly).
+
+2.  **Branch Offset**:
+    *   **If Offset Length Bit (BB1, Bit 6) is 0**:
+        *   **Branch Byte 2 (BB2)**: This single byte contains a signed 8-bit offset value.
+    *   **If Offset Length Bit (BB1, Bit 6) is 1**:
+        *   **Branch Byte 2 (BB2)**: The high byte of a signed 16-bit offset.
+        *   **Branch Byte 3 (BB3)**: The low byte of a signed 16-bit offset. (BB2 and BB3 form a Big Endian 16-bit value).
+
+3.  **Branch Execution**:
+    *   The opcode evaluates its condition (e.g., for `jz`, is the value zero?).
+    *   The result of this condition (true or false) is compared with the Sense Bit (BB1, Bit 7).
+    *   If they match (e.g., condition is true AND Sense Bit is 1, OR condition is false AND Sense Bit is 0), the branch is taken.
+    *   **Offset Calculation**: The signed branch offset (8-bit or 16-bit) is calculated.
+        *   An offset value of `0` means "return false (0) from the current routine."
+        *   An offset value of `1` means "return true (1) from the current routine."
+        *   Any other offset value is added to the address of the instruction *immediately following all parts of the current branching instruction* (i.e., opcode, its operands, and all its branch data bytes) to get the new Program Counter (PC).
+    *   If the branch is not taken, execution continues with the instruction immediately following all parts of the current branching instruction.
+
+This standardized format ensures all branching opcodes behave consistently regarding offset calculation and condition sensing.
+
+### 4.A.3 Example Opcode Definitions
 
 #### a. `rtrue` (0OP)
 
 *   **`Mnemonic`**: `rtrue`
-*   **`Opcode Value`**: `0x00B0` (Example)
+*   **`Opcode Value`**: `0x0000`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: None.
 *   **`Description`**: Returns true (1) from the current routine.
@@ -531,7 +570,7 @@ Each opcode will be defined using the following structure:
 #### b. `jz` (1OP)
 
 *   **`Mnemonic`**: `jz`
-*   **`Opcode Value`**: `0x0180`
+*   **`Opcode Value`**: `0x0100`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: 1 byte indicating the type of `value`.
@@ -546,15 +585,10 @@ Each opcode will be defined using the following structure:
         *   If LC, reads 8 bytes.
         *   If SC, reads 1 byte and zero-extends to 64 bits.
         *   If VAR, reads 1 byte variable specifier, then fetches the 64-bit value from that variable.
-    3.  If the fetched `value` is equal to 0, a branch is performed.
-    4.  If the `value` is not 0, execution continues with the instruction immediately following the branch data.
+    3.  If the fetched `value` is equal to 0, a branch is performed based on the subsequent branch data.
+    4.  If the `value` is not 0, and the branch data's 'sense' bit indicates branching on false (which it typically would for `jz`), the branch is NOT taken, and execution continues with the instruction immediately following the branch data. If the sense bit indicates branching on true, a branch IS taken. (Standard `jz` implies branch on condition true, so the sense bit in branch data should align).
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: `value == 0`.
-    *   The branch information follows the opcode, `type_byte`, and `value` operand.
-    *   It consists of a single byte. Bit 7 determines if the branch is "on true" (1) or "on false" (0) - for `jz` this implies the condition itself determines if we branch. Bit 6 determines if the offset is 1 or 2 bytes. Bits 0-5 of this byte contain the top 6 bits of the offset.
-    *   If bit 6 is 0, the next byte contains the lower 8 bits of the offset, forming a 14-bit signed offset (`((byte1 & 0x3F) << 8) | byte2`).
-    *   If bit 6 is 1, the offset is implicitly short and the jump is to fixed locations (details TBD, or this form is simplified to always use 14-bit offset).
-    *   For this example, let's assume a common Z-Machine branch: a 14-bit signed offset. The offset is calculated from the address *after* the branch data itself. A branch to offset 0 means "return false from current routine", offset 1 means "return true from current routine". Other values are added to PC.
+*   **`Branches If`**: `value == 0`. The actual branching logic (offset calculation, condition sense) is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: PC may be modified.
 *   **`Error Conditions`**:
     *   Invalid `type_byte` (not 0x00, 0x01, or 0x02).
@@ -563,7 +597,7 @@ Each opcode will be defined using the following structure:
 #### c. `add` (2OP)
 
 *   **`Mnemonic`**: `add`
-*   **`Opcode Value`**: `0x0214`
+*   **`Opcode Value`**: `0x0200`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte1 (Operand Type Specifier)`: 1 byte for `operand1`.
@@ -590,9 +624,9 @@ Each opcode will be defined using the following structure:
 #### d. `call` (VAROP)
 
 *   **`Mnemonic`**: `call`
-*   **`Opcode Value`**: `0x03E0` (Example)
+*   **`Opcode Value`**: `0x0300`
 *   **`Form`**: `VAROP`
-*   **`Operand Types`**: `routine_paddr (PADDR)`, `arg0 (Small Constant/Variable)`, ..., `argN (Small Constant/Variable)` (up to 7 args), `store_variable_ref (Variable Reference)`
+*   **`Operand Types`**: `routine_paddr (RoutinePADDR)`, `arg0 (Small Constant/Variable)`, ..., `argN (Small Constant/Variable)` (up to 7 args), `store_variable_ref (Variable Reference)`
     *   Operand types for `arg0` through `argN` are determined by type byte(s) following the opcode.
     *   The `routine_paddr` is the first operand read.
 *   **`Description`**: Calls the routine at the packed address `routine_paddr`, passing up to 7 arguments. Stores the routine's return value into `store_variable_ref`.
@@ -616,7 +650,8 @@ Each opcode will be defined using the following structure:
     *   Invalid `routine_paddr` (e.g., points outside code section, not to a valid routine).
     *   Stack overflow if call stack exceeds its maximum depth.
     *   Invalid variable references for arguments or `store_variable_ref`.
-    *   Calling a routine with more arguments than it's designed to handle (behavior TBD, may truncate or error).
+    *   If a routine is called with more arguments than it declares, the extra arguments are silently ignored by the called routine.
+    *   If a routine is called with fewer arguments than declared, the unspecified local variables corresponding to the missing arguments are initialized to 0 by the VM when the stack frame is created.
 
 ---
 
@@ -769,7 +804,7 @@ Each opcode will be defined using the following structure:
     *   (Optional) `type_timeout (Operand Type Specifier)`: For `timeout_seconds`.
     *   (Optional) `timeout_seconds (LC/SC/VAR)`: Number of seconds for timeout (0 for no timeout).
     *   (Optional) `type_routine (Operand Type Specifier)`: For `timeout_routine_paddr`.
-    *   (Optional) `timeout_routine_paddr (PADDR)`: Packed address of routine to call on timeout.
+    *   (Optional) `timeout_routine_paddr (RoutinePADDR)`: Packed address of routine to call on timeout.
     *   `store_terminator_variable_ref (Variable Reference)`: Stores the terminating character code.
 *   **`Description`**: Reads player input with optional timeout. Stores text, optionally parses, and returns terminator.
 *   **`Operation Details`**:
@@ -795,7 +830,7 @@ Each opcode will be defined using the following structure:
 #### g. `sread` (VAROP)
 
 *   **`Mnemonic`**: `sread`
-*   **`Opcode Value`**: `0x03E8` (Example)
+*   **`Opcode Value`**: `0x0301`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**: `text_buffer_addr (Large Constant/Variable Address)`, `parse_buffer_addr (Large Constant/Variable Address)` (Optional, 0 if not used)
     *   Operand types determined by a type byte following the opcode.
@@ -828,7 +863,7 @@ Each opcode will be defined using the following structure:
 #### h. `save` (0OP)
 
 *   **`Mnemonic`**: `save`
-*   **`Opcode Value`**: `0x00B5`
+*   **`Opcode Value`**: `0x0001`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: Branch data follows the opcode.
 *   **`Description`**: Attempts to save the current game state. Branches if the save operation is successful.
@@ -846,11 +881,7 @@ Each opcode will be defined using the following structure:
         *   Execution continues with the instruction immediately following the branch data (i.e., the branch is not taken).
     8.  The PC is updated according to whether the branch was taken or not.
 *   **`Stores Result To`**: Does not store a result directly. The success/failure is indicated by whether the branch is taken.
-*   **`Branches If`**: The save operation completes successfully.
-    *   The branch information is encoded as per standard Z-Machine branch data (1 or 2 bytes following the opcode, determining offset and condition sense - though for `save`, the condition is implicit success).
-    *   A branch to offset 0 means "return false from current routine" (though this is not standard for `save`, usually it's a jump address).
-    *   A branch to offset 1 means "return true from current routine" (similarly, not standard).
-    *   Other values are added to the PC (from the address after the branch data) to determine the next instruction address.
+*   **`Branches If`**: The save operation completes successfully. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1). The 'sense' bit in the branch data should be set to branch on true (success).
 *   **`Side Effects`**: A save file containing the game state is created or overwritten on the storage medium. Player I/O for filename prompt.
 *   **`Error Conditions`**:
     *   `SaveLoadEnable` flag in `flags1` is false.
@@ -861,7 +892,7 @@ Each opcode will be defined using the following structure:
 #### i. `restore` (0OP)
 
 *   **`Mnemonic`**: `restore`
-*   **`Opcode Value`**: `0x00B6`
+*   **`Opcode Value`**: `0x0002`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: Branch data follows the opcode. (Branch is taken if restore *fails*).
 *   **`Description`**: Attempts to restore a previously saved game state. If successful, execution does not return to the caller but resumes from the PC in the saved state. If restoration fails, it branches.
@@ -877,8 +908,7 @@ Each opcode will be defined using the following structure:
     8.  If the restore operation fails for any reason (e.g., `SaveLoadEnable` is false, file not found, corrupted file, header mismatch, deserialization error):
         *   A branch is performed according to the branch data. (Note: This is the inverse of `save`; `restore` branches on failure).
 *   **`Stores Result To`**: Does not store a result. In ZM2, `restore` does not return to the caller if successful.
-*   **`Branches If`**: The restore operation *fails*.
-    *   Branch information encoding is standard. The branch is taken if the restore cannot be completed.
+*   **`Branches If`**: The restore operation *fails*. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1). The 'sense' bit in the branch data should be set to branch on true (failure).
 *   **`Side Effects`**: If successful, the entire game state (memory, PC, stack) is replaced by the saved state. Player I/O for filename prompt.
 *   **`Error Conditions`**:
     *   `SaveLoadEnable` flag in `flags1` is false.
@@ -890,7 +920,7 @@ Each opcode will be defined using the following structure:
 #### j. `restart` (0OP)
 
 *   **`Mnemonic`**: `restart`
-*   **`Opcode Value`**: `0x00B7`
+*   **`Opcode Value`**: `0x0003`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: None.
 *   **`Description`**: Restarts the game from the beginning, reinitializing memory to its original state from the story file.
@@ -909,7 +939,7 @@ Each opcode will be defined using the following structure:
 #### k. `ret_popped` (0OP)
 
 *   **`Mnemonic`**: `ret_popped`
-*   **`Opcode Value`**: `0x00B8`
+*   **`Opcode Value`**: `0x0004`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: None.
 *   **`Description`**: Returns from the current routine with the value currently at the top of the game stack. The value is popped from the stack.
@@ -928,7 +958,7 @@ Each opcode will be defined using the following structure:
 #### l. `quit` (0OP)
 
 *   **`Mnemonic`**: `quit`
-*   **`Opcode Value`**: `0x00BA`
+*   **`Opcode Value`**: `0x0005`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: None.
 *   **`Description`**: Terminates the game execution immediately.
@@ -941,10 +971,10 @@ Each opcode will be defined using the following structure:
 *   **`Side Effects`**: The game ends. The VM stops.
 *   **`Error Conditions`**: None.
 
-#### m. `new_line` (0OP)
+#### m. `newline` (0OP)
 
-*   **`Mnemonic`**: `new_line`
-*   **`Opcode Value`**: `0x00BB`
+*   **`Mnemonic`**: `newline`
+*   **`Opcode Value`**: `0x0006`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: None.
 *   **`Description`**: Prints a newline character (carriage return and line feed, or equivalent) to the current output stream.
@@ -959,7 +989,7 @@ Each opcode will be defined using the following structure:
 #### n. `show_status` (0OP)
 
 *   **`Mnemonic`**: `show_status`
-*   **`Opcode Value`**: `0x00BC`
+*   **`Opcode Value`**: `0x0007`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: None.
 *   **`Description`**: Requests the VM to display the game's status line (e.g., current room name, score, turns). This is a request; the VM is not obligated to redisplay it if it's already visible or not supported. In ZM2, this opcode's behavior is largely up to the interpreter's UI implementation.
@@ -982,7 +1012,7 @@ Each opcode will be defined using the following structure:
 #### o. `verify` (0OP)
 
 *   **`Mnemonic`**: `verify`
-*   **`Opcode Value`**: `0x00BD`
+*   **`Opcode Value`**: `0x0008`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: Branch data follows the opcode.
 *   **`Description`**: Performs a checksum verification of the game file. Branches if the verification is successful. (Primarily relevant for detecting file corruption).
@@ -992,15 +1022,14 @@ Each opcode will be defined using the following structure:
     3.  If the checksums match, the verification is successful, and a branch is performed.
     4.  If the checksums do not match, the verification fails, and execution continues with the instruction immediately following the branch data.
 *   **`Stores Result To`**: Does not store a result. Success/failure is indicated by the branch.
-*   **`Branches If`**: The game file's checksum is correct.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: The game file's checksum is correct. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1). The 'sense' bit should be set to branch on true (correct checksum).
 *   **`Side Effects`**: None, other than CPU time for checksum calculation.
 *   **`Error Conditions`**: File I/O error if parts of the game file need to be re-read and fail.
 
 #### p. `piracy` (0OP)
 
 *   **`Mnemonic`**: `piracy`
-*   **`Opcode Value`**: `0x00BF`
+*   **`Opcode Value`**: `0x0009`
 *   **`Form`**: `0OP`
 *   **`Operand Types`**: Branch data follows the opcode.
 *   **`Description`**: Informs the VM that the game believes it is a pirated copy. This opcode branches to a new location if the game is *not* pirated (according to some internal VM check, which is usually a placeholder). In ZM2, this is largely a legacy opcode; its behavior might be vestigial or tied to a simple interpreter flag.
@@ -1014,8 +1043,7 @@ Each opcode will be defined using the following structure:
     4.  If the VM considers the game "genuine" (or by default), a branch is performed.
     5.  If the VM considers the game "pirated", execution continues with the instruction immediately following the branch data.
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: The VM determines the game is "genuine" (which is the typical default behavior).
-    *   Branch information encoding is standard.
+*   **`Branches If`**: The VM determines the game is "genuine" (which is the typical default behavior). The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1). The 'sense' bit should be set to branch on true (genuine).
 *   **`Side Effects`**: None, unless the game code branched to by this opcode performs some action.
 *   **`Error Conditions`**: None.
 
@@ -1033,7 +1061,7 @@ Each opcode will be defined using the following structure:
 #### q. `get_sibling` (1OP)
 
 *   **`Mnemonic`**: `get_sibling`
-*   **`Opcode Value`**: `0x0181`
+*   **`Opcode Value`**: `0x0101`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
@@ -1046,11 +1074,10 @@ Each opcode will be defined using the following structure:
     2.  Validate `object_id`. If 0 or invalid, behavior is undefined (typically results in 0 and no branch, or an error).
     3.  Retrieve the `sibling_obj_id` from the object entry for `object_id` (see Section 3, Static Data Section, Object Table).
     4.  Store the retrieved `sibling_obj_id` (which can be 0 if no sibling) into `store_variable_ref`.
-    5.  If `sibling_obj_id` is not 0, a branch is performed.
-    6.  If `sibling_obj_id` is 0, execution continues with the instruction immediately following the branch data.
+    5.  The condition is `sibling_obj_id != 0`.
+    6.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1). If the branch is not taken (i.e., no sibling), execution continues normally.
 *   **`Stores Result To`**: `store_variable_ref` (the sibling object ID, or 0 if none).
-*   **`Branches If`**: `sibling_obj_id != 0`.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `sibling_obj_id != 0`. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**:
     *   Invalid `type_byte` for `object_id`.
@@ -1060,7 +1087,7 @@ Each opcode will be defined using the following structure:
 #### r. `get_child` (1OP)
 
 *   **`Mnemonic`**: `get_child`
-*   **`Opcode Value`**: `0x0182`
+*   **`Opcode Value`**: `0x0102`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
@@ -1073,11 +1100,10 @@ Each opcode will be defined using the following structure:
     2.  Validate `object_id`.
     3.  Retrieve the `child_obj_id` from the object entry for `object_id`.
     4.  Store the retrieved `child_obj_id` (or 0 if no child) into `store_variable_ref`.
-    5.  If `child_obj_id` is not 0, a branch is performed.
-    6.  If `child_obj_id` is 0, execution continues after branch data.
+    5.  The condition is `child_obj_id != 0`.
+    6.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1). If the branch is not taken (i.e., no child), execution continues normally.
 *   **`Stores Result To`**: `store_variable_ref` (the child object ID, or 0 if none).
-*   **`Branches If`**: `child_obj_id != 0`.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `child_obj_id != 0`. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**:
     *   Invalid `type_byte` for `object_id`.
@@ -1087,7 +1113,7 @@ Each opcode will be defined using the following structure:
 #### s. `get_parent` (1OP)
 
 *   **`Mnemonic`**: `get_parent`
-*   **`Opcode Value`**: `0x0183`
+*   **`Opcode Value`**: `0x0103`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
@@ -1110,42 +1136,32 @@ Each opcode will be defined using the following structure:
 #### t. `get_prop_len` (1OP)
 
 *   **`Mnemonic`**: `get_prop_len`
-*   **`Opcode Value`**: `0x0184`
+*   **`Opcode Value`**: `0x0104`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `property_address`.
-    *   `property_address (LC/SC/VAR)`: The 64-bit byte address of the start of a property's data (NOT the property ID). This address typically comes from `get_prop_addr`.
+    *   `property_address (LC/SC/VAR)`: The 64-bit byte address of the *start of a property entry's `id_and_length` field(s)* (this is the value typically obtained from `get_prop_addr`).
     *   `store_variable_ref (Variable Reference)`: Variable to store the length of the property data in bytes.
-*   **`Description`**: Gets the length (in bytes) of the property data located at `property_address`.
+*   **`Description`**: Gets the length (in bytes) of the property data, determined from its `id_and_length` field at `property_address`.
 *   **`Operation Details`**:
-    1.  Read `type_byte`, then `property_address`.
-    2.  If `property_address` is 0, the length is 0.
-    3.  Otherwise, the byte *before* `property_address` contains the size information for that property (as per ZM2 property format: Byte 1: Bits 0-5 ID, Bit 7 length specifier; Byte 2 (if Bit 7 is 1): Length L).
-        *   The VM reads the size byte(s) that precede `property_address`.
-        *   If Bit 7 of Byte 1 (at `property_address - N`, where N depends on property layout, typically N=1 or 2 for the start of size info) is 0, length is 1.
-        *   If Bit 7 of Byte 1 is 1, then Byte 2 (at `property_address - M`) gives the length L (1-255).
-        *   This is complex as it requires knowing how far back to read for the size byte. A simpler ZM2 rule: the address given *is* the address of the first size byte of the property entry.
-            Let's assume `property_address` points to the `id_and_length` byte(s) of a property entry.
-            Revised Operation:
-            1. Read `type_byte`, then `property_address`.
-            2. If `property_address` is 0, store 0 and return.
-            3. Read Byte 1 at `property_address`. Let Bit 7 be `len_spec`.
-            4. If `len_spec` is 0, the property data length is 1.
-            5. If `len_spec` is 1, read Byte 2 at `property_address + 1`. This value is the property data length `L` (1-255). If `L` is 0 from this byte, it's an error or means length 0. ZM2 spec: "A length of 0 in Byte 2 is invalid." So, lengths are 1-255.
-    4.  Store the determined length into `store_variable_ref`.
+    1.  Read `type_byte`, then `property_address`. Fetch if VAR.
+    2.  If `property_address` is 0, store 0 into `store_variable_ref` and return.
+    3.  Read Byte 1 (B1) at `property_address`. Let Bit 7 be `len_spec`.
+    4.  If `len_spec` is 0: The property data length is 1 byte. Store 1 into `store_variable_ref`.
+    5.  If `len_spec` is 1: Read Byte 2 (B2) at `property_address + 1`. This value `L` (1-255) is the property data length. If `L` is 0 from this byte, it's an invalid property encoding; the VM should halt with an error "Invalid property length 0". Otherwise, store `L` into `store_variable_ref`.
 *   **`Stores Result To`**: `store_variable_ref` (length in bytes, or 0).
 *   **`Branches If`**: Does not branch.
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**:
     *   Invalid `type_byte` for `property_address`.
-    *   `property_address` is invalid (e.g., not within valid memory regions for properties).
-    *   Malformed property data at the address (e.g., length byte indicates a length that's inconsistent).
+    *   `property_address` is invalid (e.g., not within valid memory regions for properties, or points to data that is not a property entry).
+    *   Malformed property data at `property_address` (e.g., length byte indicates an invalid length like 0 when 2 bytes are used for size).
     *   Invalid `store_variable_ref`.
 
 #### u. `inc` (1OP)
 
 *   **`Mnemonic`**: `inc`
-*   **`Opcode Value`**: `0x0185`
+*   **`Opcode Value`**: `0x0105`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `variable_ref (Variable Reference)`: The variable to be incremented (stack/local/global). This is provided directly as a 1-byte variable specifier; no preceding `type_byte`.
@@ -1163,7 +1179,7 @@ Each opcode will be defined using the following structure:
 #### v. `dec` (1OP)
 
 *   **`Mnemonic`**: `dec`
-*   **`Opcode Value`**: `0x0186`
+*   **`Opcode Value`**: `0x0106`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `variable_ref (Variable Reference)`: The variable to be decremented. Provided directly as a 1-byte specifier.
@@ -1181,7 +1197,7 @@ Each opcode will be defined using the following structure:
 #### w. `print_addr` (1OP)
 
 *   **`Mnemonic`**: `print_addr`
-*   **`Opcode Value`**: `0x0187`
+*   **`Opcode Value`**: `0x0107`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `byte_address`.
@@ -1203,7 +1219,7 @@ Each opcode will be defined using the following structure:
 #### x. `remove_obj` (1OP)
 
 *   **`Mnemonic`**: `remove_obj`
-*   **`Opcode Value`**: `0x0189`
+*   **`Opcode Value`**: `0x0108`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
@@ -1227,7 +1243,7 @@ Each opcode will be defined using the following structure:
 #### y. `print_obj` (1OP)
 
 *   **`Mnemonic`**: `print_obj`
-*   **`Opcode Value`**: `0x018A`
+*   **`Opcode Value`**: `0x0109`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `object_id`.
@@ -1251,7 +1267,7 @@ Each opcode will be defined using the following structure:
 #### z. `ret` (1OP)
 
 *   **`Mnemonic`**: `ret`
-*   **`Opcode Value`**: `0x018B`
+*   **`Opcode Value`**: `0x010A`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `value`.
@@ -1274,33 +1290,31 @@ Each opcode will be defined using the following structure:
 #### aa. `jump` (1OP)
 
 *   **`Mnemonic`**: `jump`
-*   **`Opcode Value`**: `0x018C`
+*   **`Opcode Value`**: `0x010B`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
-    *   `type_byte (Operand Type Specifier)`: Specifies type of `offset`. Operand must be SC or LC to provide a signed 16-bit value for original Z-Machine compatibility, or a larger value if ZM2 extends jump range. For now, assume it resolves to a signed 16-bit value.
-    *   `offset (SC/LC)`: A signed 16-bit value (typically from SC, or LC where only lower 16 bits are used). This is added to the PC to determine the new execution address.
-*   **`Description`**: Unconditionally jumps to a new address calculated by adding a signed 16-bit `offset` to the current PC.
+    *   `type_byte (Operand Type Specifier)`: Specifies type of `offset`.
+    *   `offset (SC)`: A signed 16-bit value, typically provided as a Small Constant (SC), directly embedded as 2 bytes (Big Endian) after the type byte. If LC is somehow provided, only the lowest 16 bits are used and interpreted as signed.
+*   **`Description`**: Unconditionally jumps to a new address calculated by adding a signed 16-bit `offset`.
 *   **`Operation Details`**:
-    1.  Read `type_byte`, then `offset_value`.
-    2.  If `offset_value` was LC (8 bytes), it's truncated or validated to fit a signed 16-bit range for this specific jump instruction (e.g. -32768 to 32767). Or, ZM2 `jump` could support full 64-bit relative jumps if `offset` is LC. For Z-Spec compatibility, it's a 16-bit signed offset. Let's assume it's treated as a signed 16-bit value for now, obtained from the operand.
-    3.  The `offset_value` is sign-extended to 64 bits if it was SC.
-    4.  The new PC is calculated as: `PC_after_instruction + offset_value - 2`. (The -2 is because Z-Machine offsets are traditionally calculated from "address of byte after branch instruction" - which for a 1OP with 1-byte offset value, this is PC_of_opcode + 1_opcode_byte + 1_type_byte + 1_operand_byte. The offset calculation point is after the offset itself).
-        Let's simplify: The offset is relative to the address of the instruction *following* the `jump` opcode and its operand(s). So, `New_PC = Address_Of_Next_Instruction + Offset`.
+    1.  Read `type_byte`. If SC, read 2 bytes for `offset_value` (signed, Big Endian). If LC, read 8 bytes and take the lower 2 bytes, interpreting them as a signed 16-bit Big Endian value. Other types for `offset` are invalid.
+    2.  The `offset_value` (now a signed 16-bit value) is sign-extended to 64 bits.
+    3.  The new PC is calculated as: `Address_Of_Instruction_Following_Jump_Opcode_And_Its_Operands + offset_value`. (Note: Z-Machine branch/jump offsets are often calculated from the address *after* the offset data itself. If this `jump` opcode has the opcode byte (1), one type byte (1), and two bytes for SC offset (2), the 'Address_Of_Instruction_Following_Jump_Opcode_And_Its_Operands' would be PC_of_opcode + 1 + 1 + 2 = PC_of_opcode + 4).
 *   **`Stores Result To`**: Does not store a result.
 *   **`Branches If`**: Always (unconditional jump).
 *   **`Side Effects`**: PC is modified.
 *   **`Error Conditions`**:
-    *   Invalid `type_byte` (e.g. VAR for offset is not logical).
+    *   Invalid `type_byte` for `offset` (must be SC or LC).
     *   Resulting PC is outside valid code section.
 
 #### ab. `print_paddr` (1OP)
 
 *   **`Mnemonic`**: `print_paddr`
-*   **`Opcode Value`**: `0x018D`
+*   **`Opcode Value`**: `0x010C`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Must indicate PADDR type for ZM2.
-    *   `packed_address (PADDR)`: A 32-bit packed address (StringPADDR type) of a Z-encoded string within the Static Data Section.
+    *   `packed_address (StringPADDR)`: A 32-bit packed address (StringPADDR type) of a Z-encoded string within the Static Data Section.
 *   **`Description`**: Prints the Z-encoded string located at the `packed_address`.
 *   **`Operation Details`**:
     1.  Read `type_byte`. It should indicate PADDR (e.g. 0x03).
@@ -1319,7 +1333,7 @@ Each opcode will be defined using the following structure:
 #### ac. `load` (1OP)
 
 *   **`Mnemonic`**: `load`
-*   **`Opcode Value`**: `0x018E`
+*   **`Opcode Value`**: `0x010D`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `variable_ref (Variable Reference)`: The variable whose content is to be loaded. This is provided directly as a 1-byte specifier.
@@ -1340,7 +1354,7 @@ Each opcode will be defined using the following structure:
 #### ad. `not` (1OP)
 
 *   **`Mnemonic`**: `not`
-*   **`Opcode Value`**: `0x018F`
+*   **`Opcode Value`**: `0x010E`
 *   **`Form`**: `1OP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: Specifies type of `value`.
@@ -1385,11 +1399,10 @@ Each opcode will be defined using the following structure:
 *   **`Operation Details`**:
     1.  Read `type_byte1`, then `value1`. Fetch if VAR.
     2.  Read `type_byte2`, then `value2`. Fetch if VAR.
-    3.  If `value1` is equal to `value2`, a branch is performed.
-    4.  Otherwise, execution continues after the branch data.
+    3.  The condition is `value1 == value2`.
+    4.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: `value1 == value2`.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `value1 == value2`. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: PC may be modified.
 *   **`Error Conditions`**:
     *   Invalid `type_byte1` or `type_byte2`.
@@ -1410,11 +1423,10 @@ Each opcode will be defined using the following structure:
 *   **`Operation Details`**:
     1.  Read `type_byte1`, then `value1`. Fetch if VAR.
     2.  Read `type_byte2`, then `value2`. Fetch if VAR.
-    3.  Perform a signed 64-bit comparison.
-    4.  If `value1 < value2`, a branch is performed. Otherwise, execution continues after branch data.
+    3.  The condition is `value1 < value2` (signed 64-bit comparison).
+    4.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: `value1 < value2` (signed).
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `value1 < value2` (signed). The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: PC may be modified.
 *   **`Error Conditions`**:
     *   Invalid `type_byte1` or `type_byte2`.
@@ -1435,11 +1447,10 @@ Each opcode will be defined using the following structure:
 *   **`Operation Details`**:
     1.  Read `type_byte1`, then `value1`. Fetch if VAR.
     2.  Read `type_byte2`, then `value2`. Fetch if VAR.
-    3.  Perform a signed 64-bit comparison.
-    4.  If `value1 > value2`, a branch is performed. Otherwise, execution continues after branch data.
+    3.  The condition is `value1 > value2` (signed 64-bit comparison).
+    4.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: `value1 > value2` (signed).
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `value1 > value2` (signed). The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: PC may be modified.
 *   **`Error Conditions`**:
     *   Invalid `type_byte1` or `type_byte2`.
@@ -1461,10 +1472,10 @@ Each opcode will be defined using the following structure:
     2.  Decrement the value by 1 (signed 64-bit arithmetic, wraps on underflow).
     3.  Store the new value back into `variable_ref`.
     4.  Read `type_byte_val`, then `value_to_compare`. Fetch if VAR.
-    5.  If the new value of `variable_ref` is less than `value_to_compare` (signed comparison), a branch is performed.
+    5.  The condition is `(new value of variable_ref) < value_to_compare` (signed comparison).
+    6.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: The decremented value is stored back into `variable_ref`.
-*   **`Branches If`**: `(decremented_variable_ref_value) < value_to_compare` (signed).
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `(decremented_variable_ref_value) < value_to_compare` (signed). The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: `variable_ref` is modified. PC may be modified.
 *   **`Error Conditions`**:
     *   Invalid `variable_ref`.
@@ -1487,10 +1498,10 @@ Each opcode will be defined using the following structure:
     2.  Increment the value by 1 (signed 64-bit arithmetic, wraps on overflow).
     3.  Store the new value back into `variable_ref`.
     4.  Read `type_byte_val`, then `value_to_compare`. Fetch if VAR.
-    5.  If the new value of `variable_ref` is greater than `value_to_compare` (signed comparison), a branch is performed.
+    5.  The condition is `(new value of variable_ref) > value_to_compare` (signed comparison).
+    6.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: The incremented value is stored back into `variable_ref`.
-*   **`Branches If`**: `(incremented_variable_ref_value) > value_to_compare` (signed).
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `(incremented_variable_ref_value) > value_to_compare` (signed). The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: `variable_ref` is modified. PC may be modified.
 *   **`Error Conditions`**:
     *   Invalid `variable_ref`.
@@ -1513,10 +1524,10 @@ Each opcode will be defined using the following structure:
     1.  Read `type_byte_obj1`, then `object_id1`. Fetch if VAR. Must be a valid object ID > 0.
     2.  Read `type_byte_obj2`, then `object_id2`. Fetch if VAR. Must be a valid object ID > 0.
     3.  Retrieve the `parent_obj_id` of `object_id1`.
-    4.  If `parent_obj_id == object_id2`, a branch is performed.
+    4.  The condition is `parent_obj_id == object_id2`.
+    5.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: `object_id1` is a child of `object_id2`.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `object_id1` is a child of `object_id2`. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**:
     *   Invalid type bytes.
@@ -1538,10 +1549,10 @@ Each opcode will be defined using the following structure:
     1.  Read `type_byte_bmp`, then `bitmap`. Fetch/extend.
     2.  Read `type_byte_flags`, then `flags`. Fetch/extend.
     3.  Calculate `result = bitmap & flags`.
-    4.  If `result != 0`, a branch is performed.
+    4.  The condition is `result != 0`.
+    5.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: Does not store a result. (Original Z-Spec `test` stores the result, ZM2 `test` is a branch op only, like `test_attr`).
-*   **`Branches If`**: `(bitmap & flags) != 0`.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: `(bitmap & flags) != 0`. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**:
     *   Invalid type bytes.
@@ -1611,10 +1622,10 @@ Each opcode will be defined using the following structure:
     1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be a valid object ID > 0.
     2.  Read `type_byte_attr`, then `attribute_id`. Fetch/extend. Must be 0-63.
     3.  Retrieve the 64-bit `attributes` field for `object_id`.
-    4.  If bit `attribute_id` is set in `attributes` (i.e., `(attributes >> attribute_id) & 1 == 1`), a branch is performed.
+    4.  The condition is `(attributes >> attribute_id) & 1 == 1`.
+    5.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: Does not store a result.
-*   **`Branches If`**: Object has the attribute.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: Object has the attribute. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**:
     *   Invalid type bytes.
@@ -1674,7 +1685,7 @@ Each opcode will be defined using the following structure:
 #### aq. `insert_obj` (2OP)
 
 *   **`Mnemonic`**: `insert_obj`
-*   **`Opcode Value`**: `0x020E`
+*   **`Opcode Value`**: `0x020D`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
@@ -1702,7 +1713,7 @@ Each opcode will be defined using the following structure:
 #### ar. `loadw` (2OP)
 
 *   **`Mnemonic`**: `loadw`
-*   **`Opcode Value`**: `0x020F`
+*   **`Opcode Value`**: `0x020E`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
@@ -1729,7 +1740,7 @@ Each opcode will be defined using the following structure:
 #### as. `loadb` (2OP)
 
 *   **`Mnemonic`**: `loadb`
-*   **`Opcode Value`**: `0x0210`
+*   **`Opcode Value`**: `0x020F`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
@@ -1757,7 +1768,7 @@ Each opcode will be defined using the following structure:
 #### at. `get_prop` (2OP)
 
 *   **`Mnemonic`**: `get_prop`
-*   **`Opcode Value`**: `0x0211`
+*   **`Opcode Value`**: `0x0210`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
@@ -1772,12 +1783,19 @@ Each opcode will be defined using the following structure:
     3.  Locate the property data for `object_id` and `property_id`.
         *   Get `property_table_ptr` for `object_id`.
         *   Iterate through properties until `property_id` is matched or end of list.
-    4.  If property not found: Load the default property value from property defaults table (using `property_id` to index it). The property defaults table starts at `static_data_section_start` (or a specific header pointer if ZM2 changes this). Each entry is a 64-bit word. Property ID 1 corresponds to index 0.
+    4.  If property not found:
+        *   Read `property_defaults_table_start` from the Header.
+        *   If `property_defaults_table_start` is 0 or points outside valid static data, the default value is 0.
+        *   Otherwise, the default value is read from `property_defaults_table_start + ((property_id - 1) * 8)`. (Property IDs are 1-63).
     5.  If property found:
-        *   Determine its length (1 or L bytes from size info).
-        *   If length is 1 byte, read byte, zero-extend to 64-bit.
-        *   If length is 2 bytes (historically word), read 2 bytes, zero-extend to 64-bit. (ZM2 properties can be up to 255 bytes. This opcode traditionally reads 1 or 2 bytes. ZM2 needs clarification: Does `get_prop` only read first 1/2/4/8 bytes, or does it error for longer props?)
-        *   **ZM2 Clarification**: `get_prop` will read the first 8 bytes (a 64-bit word) if the property length is >= 8. If length is < 8, it reads the actual number of bytes and zero-extends to a 64-bit value. If property length is 0 (e.g., from `get_prop_len` on an invalid prop address), it should behave like property not found (i.e., return default).
+        *   Determine its actual data length (PL) using a mechanism similar to `get_prop_len` (i.e., by looking at the `id_and_length` field associated with this property, whose address is obtained via a `get_prop_addr`-like mechanism).
+        *   Let P_DATA_START be the address of the first byte of the property's actual data (i.e., `address_of_id_and_length_field + 1` or `+ 2` depending on the size of the `id_and_length` field itself).
+        *   If PL is 1 byte: Read 1 byte from P_DATA_START, zero-extend to 64-bit.
+        *   If PL is 2 bytes: Read 2 bytes (Big Endian) from P_DATA_START, zero-extend to 64-bit.
+        *   If PL is 4 bytes: Read 4 bytes (Big Endian) from P_DATA_START, zero-extend to 64-bit.
+        *   If PL >= 8 bytes: Read the first 8 bytes (Big Endian) as a 64-bit word from P_DATA_START.
+        *   If PL is 3, 5, 6, or 7 bytes: Read PL bytes from P_DATA_START and zero-extend to a 64-bit value, preserving the order of bytes read in the lower part of the 64-bit result (e.g., if PL=3, and bytes read are B0, B1, B2, the 64-bit result would be `0x0000000000[B2][B1][B0]`).
+        *   If PL is 0 (due to malformed property where `get_prop_len` logic would identify this, or if `get_prop_addr` returned 0 and was then used incorrectly), this should be treated as 'property not found', and the default value should be returned.
     6.  Store the value into `store_variable_ref`.
 *   **`Stores Result To`**: `store_variable_ref`.
 *   **`Branches If`**: Does not branch.
@@ -1786,25 +1804,26 @@ Each opcode will be defined using the following structure:
     *   Invalid type bytes.
     *   `object_id` is invalid.
     *   `property_id` is invalid (0 or >63).
+    *   Malformed property data (e.g., inconsistent length encoding).
 
 #### au. `get_prop_addr` (2OP)
 
 *   **`Mnemonic`**: `get_prop_addr`
-*   **`Opcode Value`**: `0x0212`
+*   **`Opcode Value`**: `0x0211`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
     *   `object_id (LC/SC/VAR)`: The object ID.
     *   `type_byte_prop (Operand Type Specifier)`: For `property_id`.
     *   `property_id (LC/SC/VAR)`: The property ID (1-63).
-    *   `store_variable_ref (Variable Reference)`: Variable to store the byte address of the property data.
-*   **`Description`**: Gets the byte address of the actual data for property `property_id` of object `object_id`. Returns 0 if property not present.
+    *   `store_variable_ref (Variable Reference)`: Variable to store the byte address of the property's `id_and_length` field. Returns 0 if property not present.
+*   **`Description`**: Gets the byte address of the property's `id_and_length` field for property `property_id` of object `object_id`. Returns 0 if property not present.
 *   **`Operation Details`**:
     1.  Read `type_byte_obj`, then `object_id`. Fetch if VAR. Must be valid.
     2.  Read `type_byte_prop`, then `property_id`. Fetch/extend. Must be 1-63.
     3.  Locate the property:
         *   Get `property_table_ptr` for `object_id`.
-        *   Iterate through properties. If `property_id` found, the address stored is the address of the first byte of property data itself (after the size byte(s)).
+        *   Iterate through properties. If `property_id` found, the address stored is the address of the *first byte of its `id_and_length` field*.
     4.  If property not found, store 0.
     5.  Store address into `store_variable_ref`.
 *   **`Stores Result To`**: `store_variable_ref` (address or 0).
@@ -1818,7 +1837,7 @@ Each opcode will be defined using the following structure:
 #### av. `get_next_prop` (2OP)
 
 *   **`Mnemonic`**: `get_next_prop`
-*   **`Opcode Value`**: `0x0213`
+*   **`Opcode Value`**: `0x0212`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
@@ -1848,7 +1867,7 @@ Each opcode will be defined using the following structure:
 #### aw. `sub` (2OP)
 
 *   **`Mnemonic`**: `sub`
-*   **`Opcode Value`**: `0x0215`
+*   **`Opcode Value`**: `0x0213`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte1 (Operand Type Specifier)`: For `value1`.
@@ -1869,7 +1888,7 @@ Each opcode will be defined using the following structure:
 #### ax. `mul` (2OP)
 
 *   **`Mnemonic`**: `mul`
-*   **`Opcode Value`**: `0x0216`
+*   **`Opcode Value`**: `0x0214`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte1`: For `value1`.
@@ -1890,7 +1909,7 @@ Each opcode will be defined using the following structure:
 #### ay. `div` (2OP)
 
 *   **`Mnemonic`**: `div`
-*   **`Opcode Value`**: `0x0217`
+*   **`Opcode Value`**: `0x0215`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte1`: For `dividend`.
@@ -1912,7 +1931,7 @@ Each opcode will be defined using the following structure:
 #### az. `mod` (2OP)
 
 *   **`Mnemonic`**: `mod`
-*   **`Opcode Value`**: `0x0218`
+*   **`Opcode Value`**: `0x0216`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte1`: For `dividend`.
@@ -1934,7 +1953,7 @@ Each opcode will be defined using the following structure:
 #### ba. `set_colour` (2OP)
 
 *   **`Mnemonic`**: `set_colour`
-*   **`Opcode Value`**: `0x021B`
+*   **`Opcode Value`**: `0x0217`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_fg (Operand Type Specifier)`: For `foreground_color`.
@@ -1956,7 +1975,7 @@ Each opcode will be defined using the following structure:
 #### bb. `throw` (2OP)
 
 *   **`Mnemonic`**: `throw`
-*   **`Opcode Value`**: `0x021C`
+*   **`Opcode Value`**: `0x0218`
 *   **`Form`**: `2OP`
 *   **`Operand Types`**:
     *   `type_byte_val (Operand Type Specifier)`: For `value_to_throw`.
@@ -1993,7 +2012,7 @@ Each opcode will be defined using the following structure:
 #### bc. `storew` (VAROP)
 
 *   **`Mnemonic`**: `storew`
-*   **`Opcode Value`**: `0x03E1`
+*   **`Opcode Value`**: `0x0302`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
@@ -2018,7 +2037,7 @@ Each opcode will be defined using the following structure:
 #### bd. `storeb` (VAROP)
 
 *   **`Mnemonic`**: `storeb`
-*   **`Opcode Value`**: `0x03E2`
+*   **`Opcode Value`**: `0x0303`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
@@ -2044,7 +2063,7 @@ Each opcode will be defined using the following structure:
 #### be. `put_prop` (VAROP)
 
 *   **`Mnemonic`**: `put_prop`
-*   **`Opcode Value`**: `0x03E3`
+*   **`Opcode Value`**: `0x0304`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_obj (Operand Type Specifier)`: For `object_id`.
@@ -2056,25 +2075,26 @@ Each opcode will be defined using the following structure:
 *   **`Description`**: Writes `value_to_store` to property `property_id` of object `object_id`.
 *   **`Operation Details`**:
     1.  Read operands: `object_id`, `property_id`, `value_to_store` using their type bytes.
-    2.  Validate `object_id` and `property_id` (1-63).
-    3.  Locate the property data for `object_id` and `property_id`.
-        *   If property does not exist, this is an error (unlike standard Z-Machine which might create it or use defaults; ZM2 properties must exist to be written by `put_prop` unless a future `create_prop` opcode is defined). Halt with error "Property not found".
-    4.  Determine the length of the existing property from its size information.
-    5.  The `value_to_store` is written into the property.
-        *   If the property's length is 1 byte, only the lowest byte of `value_to_store` is written.
-        *   If the property's length is 2 bytes, the lowest 2 bytes of `value_to_store` are written (Big Endian).
-        *   If the property's length is >= 8 bytes, the full 64-bit `value_to_store` is written.
-        *   If property's length is between 3 and 7 bytes, the lowest 'length' bytes of `value_to_store` are written.
-        *   It is an error if the property length is 0 or if `value_to_store` cannot logically fit (e.g. storing into a 0-length property, though ZM2 property length in definition is 1-255).
+    2.  Validate `object_id` (must be a valid object ID > 0) and `property_id` (must be 1-63).
+    3.  Locate the property data address (PDA) for `object_id` and `property_id` using a mechanism similar to `get_prop_addr` (i.e., finding the address of the `id_and_length` field).
+    4.  If the property does not exist on the object (PDA is 0), the VM MUST halt with a fatal error: "Attempted to write to non-existent property [property_id] on object [object_id]".
+    5.  Determine the actual data length (PL) of the property using a mechanism similar to `get_prop_len` based on the `id_and_length` field at PDA. If this indicates an invalid encoding (e.g., a 2-byte size field encoding a length of 0), the VM should halt with an error.
+    6.  Let P_DATA_START be `PDA + 1` if the size of the `id_and_length` field is 1 byte (i.e. data length is 1), or `PDA + 2` if the size of the `id_and_length` field is 2 bytes.
+    7.  The `value_to_store` (a 64-bit value) is written into the property's data field starting at P_DATA_START as follows:
+        *   If PL is 1 byte: The lowest byte of `value_to_store` is written to P_DATA_START.
+        *   If PL is 2 bytes: The lowest 2 bytes of `value_to_store` are written (Big Endian) starting at P_DATA_START.
+        *   If PL is 4 bytes: The lowest 4 bytes of `value_to_store` are written (Big Endian) starting at P_DATA_START.
+        *   If PL >= 8 bytes: The full 64-bit `value_to_store` is written (Big Endian) starting at P_DATA_START. If PL > 8, only the first 8 bytes of the property data are modified by this `put_prop` operation.
+        *   If PL is 3, 5, 6, or 7 bytes: The lowest PL bytes of `value_to_store` are written (Big Endian for multi-byte segments) starting at P_DATA_START. For example, if PL is 3, bytes 0, 1, 2 of `value_to_store` (representing the lowest 3 bytes of the 64-bit value when viewed in Big Endian order) are written.
 *   **`Stores Result To`**: Does not store a result in a variable.
 *   **`Branches If`**: Does not branch.
 *   **`Side Effects`**: Property value of an object is modified.
-*   **`Error Conditions`**: Invalid type bytes. Invalid `object_id` or `property_id`. Property not found on object. Write error if property length is incompatible with storing a meaningful value (e.g. zero length).
+*   **`Error Conditions`**: Invalid type bytes. Invalid `object_id` or `property_id`. Property not found on object. Property has an invalid encoded length (e.g. 0 from a 2-byte size field).
 
 #### bf. `print_char` (VAROP)
 
 *   **`Mnemonic`**: `print_char`
-*   **`Opcode Value`**: `0x03E5`
+*   **`Opcode Value`**: `0x0305`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: For `char_code`.
@@ -2082,9 +2102,9 @@ Each opcode will be defined using the following structure:
 *   **`Description`**: Prints a single character.
 *   **`Operation Details`**:
     1.  Read `type_byte`, then `char_code`. Fetch/extend.
-    2.  If `StrictZSCIICompatMode` is ON: `char_code` is treated as ZSCII. If > 255, print '?' or transliterate.
-    3.  If `StrictZSCIICompatMode` is OFF: `char_code` is treated as a Unicode code point. Print it using `print_unicode` logic.
-    4.  Standard ZSCII codes (e.g., 13 for newline) are honored.
+    2.  If `StrictZSCIICompatMode` is ON: `char_code` is treated as a ZSCII character code (0-255). If the `char_code` represents a printable ZSCII character (including ZSCII newline 13), it is printed. If it's an undefined or unprintable ZSCII value (other than defined control characters like newline), '?' is printed. Values outside the 0-255 range when this mode is ON should ideally be an error or print '?'.
+    3.  If `StrictZSCIICompatMode` is OFF (default Unicode mode): `char_code` is treated as a Unicode code point. The VM attempts to print this character. If the specific Unicode character cannot be rendered by the terminal/interpreter, a substitution character (like '?') may be displayed by the terminal itself.
+    4.  Standard ZSCII codes (e.g., 13 for newline) are honored, particularly for their control function if applicable, regardless of mode.
 *   **`Stores Result To`**: None.
 *   **`Branches If`**: None.
 *   **`Side Effects`**: Character printed.
@@ -2093,7 +2113,7 @@ Each opcode will be defined using the following structure:
 #### bg. `print_num` (VAROP)
 
 *   **`Mnemonic`**: `print_num`
-*   **`Opcode Value`**: `0x03E6`
+*   **`Opcode Value`**: `0x0306`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: For `value`.
@@ -2111,7 +2131,7 @@ Each opcode will be defined using the following structure:
 #### bh. `random` (VAROP)
 
 *   **`Mnemonic`**: `random`
-*   **`Opcode Value`**: `0x03E7`
+*   **`Opcode Value`**: `0x0307`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_range (Operand Type Specifier)`: For `range`.
@@ -2133,7 +2153,7 @@ Each opcode will be defined using the following structure:
 #### bi. `push` (VAROP)
 
 *   **`Mnemonic`**: `push`
-*   **`Opcode Value`**: `0x03E8`
+*   **`Opcode Value`**: `0x0308`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: For `value`.
@@ -2150,7 +2170,7 @@ Each opcode will be defined using the following structure:
 #### bj. `pull` (VAROP)
 
 *   **`Mnemonic`**: `pull`
-*   **`Opcode Value`**: `0x03E9`
+*   **`Opcode Value`**: `0x0309`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `variable_ref (Variable Reference)`: Variable to store the value popped from the stack. If `variable_ref` is stack (0x00), value is popped and discarded.
@@ -2168,7 +2188,7 @@ Each opcode will be defined using the following structure:
 #### bk. `split_window` (VAROP)
 
 *   **`Mnemonic`**: `split_window`
-*   **`Opcode Value`**: `0x03EA`
+*   **`Opcode Value`**: `0x030A`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_lines (Operand Type Specifier)`: For `lines`.
@@ -2188,7 +2208,7 @@ Each opcode will be defined using the following structure:
 #### bl. `set_window` (VAROP)
 
 *   **`Mnemonic`**: `set_window`
-*   **`Opcode Value`**: `0x03EB`
+*   **`Opcode Value`**: `0x030B`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_win (Operand Type Specifier)`: For `window_id`.
@@ -2206,7 +2226,7 @@ Each opcode will be defined using the following structure:
 #### bm. `erase_window` (VAROP)
 
 *   **`Mnemonic`**: `erase_window`
-*   **`Opcode Value`**: `0x03ED`
+*   **`Opcode Value`**: `0x030C`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_win (Operand Type Specifier)`: For `window_id`.
@@ -2225,7 +2245,7 @@ Each opcode will be defined using the following structure:
 #### bn. `erase_line` (VAROP)
 
 *   **`Mnemonic`**: `erase_line`
-*   **`Opcode Value`**: `0x03EE`
+*   **`Opcode Value`**: `0x030D`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_val (Operand Type Specifier)`: For `value`.
@@ -2242,7 +2262,7 @@ Each opcode will be defined using the following structure:
 #### bo. `set_cursor` (VAROP)
 
 *   **`Mnemonic`**: `set_cursor`
-*   **`Opcode Value`**: `0x03EF`
+*   **`Opcode Value`**: `0x030E`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_row (Operand Type Specifier)`: For `row`.
@@ -2265,7 +2285,7 @@ Each opcode will be defined using the following structure:
 #### bp. `get_cursor` (VAROP)
 
 *   **`Mnemonic`**: `get_cursor`
-*   **`Opcode Value`**: `0x03F0`
+*   **`Opcode Value`**: `0x030F`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_arr (Operand Type Specifier)`: For `array_addr`.
@@ -2285,7 +2305,7 @@ Each opcode will be defined using the following structure:
 #### bq. `set_text_style` (VAROP)
 
 *   **`Mnemonic`**: `set_text_style`
-*   **`Opcode Value`**: `0x03F1`
+*   **`Opcode Value`**: `0x0310`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_style (Operand Type Specifier)`: For `style_flags`.
@@ -2303,7 +2323,7 @@ Each opcode will be defined using the following structure:
 #### br. `buffer_mode` (VAROP)
 
 *   **`Mnemonic`**: `buffer_mode`
-*   **`Opcode Value`**: `0x03F2`
+*   **`Opcode Value`**: `0x0311`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_mode (Operand Type Specifier)`: For `mode`.
@@ -2322,7 +2342,7 @@ Each opcode will be defined using the following structure:
 #### bs. `output_stream` (VAROP)
 
 *   **`Mnemonic`**: `output_stream`
-*   **`Opcode Value`**: `0x03F3`
+*   **`Opcode Value`**: `0x0312`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_stream (Operand Type Specifier)`: For `stream_id`.
@@ -2346,7 +2366,7 @@ Each opcode will be defined using the following structure:
 #### bt. `input_stream` (VAROP)
 
 *   **`Mnemonic`**: `input_stream`
-*   **`Opcode Value`**: `0x03F4`
+*   **`Opcode Value`**: `0x0313`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_stream (Operand Type Specifier)`: For `stream_id`.
@@ -2364,7 +2384,7 @@ Each opcode will be defined using the following structure:
 #### bu. `sound_effect` (VAROP)
 
 *   **`Mnemonic`**: `sound_effect`
-*   **`Opcode Value`**: `0x03F5`
+*   **`Opcode Value`**: `0x0314`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_num (Operand Type Specifier)`: For `sound_number`.
@@ -2374,7 +2394,7 @@ Each opcode will be defined using the following structure:
     *   `type_byte_vol (Operand Type Specifier)`: For `volume_and_repeats`.
     *   `volume_and_repeats (LC/SC/VAR)`: Volume (high byte), repeats (low byte).
     *   (Optional) `type_byte_routine (Operand Type Specifier)`: For `sound_finished_routine_paddr`.
-    *   (Optional) `sound_finished_routine_paddr (PADDR)`: Routine to call when sound finishes.
+    *   (Optional) `sound_finished_routine_paddr (RoutinePADDR)`: Routine to call when sound finishes.
 *   **`Description`**: Manages sound effects. (V4+) Often optional in interpreters.
 *   **`Operation Details`**:
     1.  Read operands.
@@ -2391,7 +2411,7 @@ Each opcode will be defined using the following structure:
 #### bv. `read_char` (VAROP)
 
 *   **`Mnemonic`**: `read_char`
-*   **`Opcode Value`**: `0x03F6`
+*   **`Opcode Value`**: `0x0315`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_one (Operand Type Specifier)`: For `input_device_ignored`. (Typically 1, historical).
@@ -2415,7 +2435,7 @@ Each opcode will be defined using the following structure:
 #### bw. `scan_table` (VAROP)
 
 *   **`Mnemonic`**: `scan_table`
-*   **`Opcode Value`**: `0x03F7`
+*   **`Opcode Value`**: `0x0316`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_val (Operand Type Specifier)`: For `value_to_find`.
@@ -2434,18 +2454,18 @@ Each opcode will be defined using the following structure:
     2.  Iterate from `table_addr` for `num_items`. Each item is `form_byte & 0x7F` bytes long.
     3.  If `(form_byte & 0x80) == 0` (bytes): Compare `value_to_find` (lowest byte if `value_to_find` is wider than field) with each byte field.
     4.  If `(form_byte & 0x80) != 0` (words): Compare `value_to_find` (relevant bytes if field < 8 bytes, else full 64-bit) with each word field.
-    5.  If found: Store item's address in `store_variable_ref`. Branch.
-    6.  If not found: Store 0. Continue after branch data.
+    5.  If found: Store item's address in `store_variable_ref`. The condition for branching is true.
+    6.  If not found: Store 0. The condition for branching is false.
+    7.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: `store_variable_ref`.
-*   **`Branches If`**: Value found in table.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: Value found in table. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**: Invalid types/var refs. Invalid table address or form.
 
 #### bx. `print_unicode` (VAROP)
 
 *   **`Mnemonic`**: `print_unicode`
-*   **`Opcode Value`**: `0x03F8` (Example ZM2, distinct from `print_char`)
+*   **`Opcode Value`**: `0x0317`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: For `unicode_char_code`.
@@ -2464,7 +2484,7 @@ Each opcode will be defined using the following structure:
 #### by. `check_unicode` (VAROP)
 
 *   **`Mnemonic`**: `check_unicode`
-*   **`Opcode Value`**: `0x03F9` (Example ZM2)
+*   **`Opcode Value`**: `0x0318`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte (Operand Type Specifier)`: For `unicode_char_code`.
@@ -2486,7 +2506,7 @@ Each opcode will be defined using the following structure:
 #### bz. `store` (VAROP)
 
 *   **`Mnemonic`**: `store`
-*   **`Opcode Value`**: `0x03FA` (Example ZM2, distinct from 2OP `store` in ZSpec < V5)
+*   **`Opcode Value`**: `0x0319`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `variable_ref (Variable Reference)`: Variable to store into (1-byte specifier).
@@ -2505,7 +2525,7 @@ Each opcode will be defined using the following structure:
 #### ca. `tokenise` (VAROP)
 
 *   **`Mnemonic`**: `tokenise`
-*   **`Opcode Value`**: `0x03FB` (Example ZM2)
+*   **`Opcode Value`**: `0x031A`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_text (Operand Type Specifier)`: For `text_buffer_addr`.
@@ -2531,7 +2551,7 @@ Each opcode will be defined using the following structure:
 #### cb. `encode_text` (VAROP)
 
 *   **`Mnemonic`**: `encode_text`
-*   **`Opcode Value`**: `0x03FC` (Example ZM2)
+*   **`Opcode Value`**: `0x031B`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_zscii (Operand Type Specifier)`: For `zscii_text_addr`.
@@ -2555,7 +2575,7 @@ Each opcode will be defined using the following structure:
 #### cc. `copy_table` (VAROP)
 
 *   **`Mnemonic`**: `copy_table`
-*   **`Opcode Value`**: `0x03FD` (Example ZM2)
+*   **`Opcode Value`**: `0x031C`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_src (Operand Type Specifier)`: For `source_table_addr`.
@@ -2577,7 +2597,7 @@ Each opcode will be defined using the following structure:
 #### cd. `print_table` (VAROP)
 
 *   **`Mnemonic`**: `print_table`
-*   **`Opcode Value`**: `0x03FE` (Example ZM2)
+*   **`Opcode Value`**: `0x031D`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_addr (Operand Type Specifier)`: For `table_addr`.
@@ -2604,7 +2624,7 @@ Each opcode will be defined using the following structure:
 #### ce. `check_arg_count` (VAROP)
 
 *   **`Mnemonic`**: `check_arg_count`
-*   **`Opcode Value`**: `0x03FF` (Example ZM2)
+*   **`Opcode Value`**: `0x031E`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
     *   `type_byte_arg_num (Operand Type Specifier)`: For `argument_number`.
@@ -2614,10 +2634,10 @@ Each opcode will be defined using the following structure:
 *   **`Operation Details`**:
     1.  Read `argument_number`.
     2.  Check the count of arguments passed to the current routine (stored in stack frame).
-    3.  If `count_of_args_passed >= argument_number`, branch.
+    3.  The condition is `count_of_args_passed >= argument_number`.
+    4.  Branching is performed based on this condition and the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Stores Result To`**: None.
-*   **`Branches If`**: Current routine received at least `argument_number` arguments.
-    *   Branch information encoding is standard.
+*   **`Branches If`**: Current routine received at least `argument_number` arguments. The actual branching logic is defined by the Standard Branch Data Format (see Section 4.A.2.1).
 *   **`Side Effects`**: PC may be modified.
 *   **`Error Conditions`**: Invalid type/var ref. `argument_number` is 0 or invalid.
 
@@ -2661,6 +2681,7 @@ The final assignment of numerical opcode values needs to be done systematically 
         *   For NLU: Extracts the structured action.
         *   For NLG: Extracts the generated text and converts it to Z-encoded format.
         *   The VM updates the internal state associated with the handle (e.g., to "Success", "Failed"). If successful, it writes the processed data to the `result_buffer_addr` specified in the `start_llm_*` call.
+        *   Crucially, for both NLU and NLG, the VM completes all necessary processing of the LLM's response (JSON parsing for NLU, text extraction and Z-Machine format conversion for NLG) *before* `check_llm_status` reports a status of `1` (Success). Thus, when `get_llm_result` confirms success, the data in `result_buffer_addr` is immediately usable by the Z-code in the expected format (a JSON string for NLU, a Z-encoded/Unicode-sequence string for NLG).
         *   Subsequent calls to `check_llm_status` for that handle will then return the updated status. If the status is "Success", `get_llm_result` can be called.
 
 -   **Data Structures for LLM Communication**: The `start_llm_parse` and `start_llm_generate` opcodes define operands for `input_text_addr`, `context_data_addr`, and `result_buffer_addr`. The data at these addresses will typically be formatted as JSON strings, though the design allows for other structured binary formats if optimized. To ensure interoperability and simplify LLM fine-tuning, the following JSON structures are defined as the **normative standard** for communication between the Z-Machine Mark 2 VM and the LLM. While the VM's JSON parser for LLM responses should be somewhat robust to minor structural variations (e.g., extra fields returned by the LLM), the VM will always *construct* its requests to the LLM adhering to this defined structure. LLMs fine-tuned for Z-Machine Mark 2 should be trained to expect input in this format and produce output that aligns with it.
@@ -2696,28 +2717,19 @@ The final assignment of numerical opcode values needs to be done systematically 
             This payload structure, particularly the content of the `inputs` field combining player command, context, and task prompt, is the standard format the VM will send for NLU requests.
 
     *   **Receiving Information from LLM (NLU - populated in `result_buffer_addr` by VM before `get_llm_result` confirms it)**:
-        *   The LLM is expected to return a JSON structure that corresponds to the 'Task: Parse the player's command...' part of the prompt. The standard format for this structured action, which the VM will parse from the LLM's `generated_text` field, is:
+        *   The LLM is expected to return a JSON structure that corresponds to the 'Task: Parse the player's command...' part of the prompt. The VM will parse the LLM's overall JSON response (which often wraps the core content, e.g., within a `generated_text` field of an array element). The VM then extracts or reconstructs the meaningful JSON *object* representing the structured action and stores this object *as a JSON string* into `result_buffer_addr`.
+        *   Example of the *content written by the VM to `result_buffer_addr`* after a successful LLM NLU task:
             ```json
-            // Conceptual content written to result_buffer_addr by VM after successful LLM NLU task
-            // This is the JSON part of the Hugging Face API response
-            [ // Some models return a list, with the actual JSON object as the value of a field.
-              {
-                "generated_text": { // The LLM directly returns a JSON object here
-                    "action": "take",
-                    "noun1": "small brass key", // or "obj15" if IDs are preferred
-                    "preposition": "from",
-                    "noun2": "oak table"   // or "obj12"
-                }
-              }
-            ]
-            // Or, if the API can return the JSON directly:
-            // { "action": "take", "noun1": "small brass key", ... }
-            // The VM's JSON parser should be robust enough to handle the Hugging Face API's response structure
-            // and directly parse the meaningful JSON object from the relevant field (e.g., `generated_text`).
-            // The goal is to avoid requiring Z-code to perform a second parsing step on a stringified JSON.
+            {
+                "action": "take",
+                "noun1": "small brass key",
+                "preposition": "from",
+                "noun2": "oak table",
+                "original_command": "take the red key from the oak table"
+            }
             ```
-            This structured action format is the standard the VM anticipates for NLU results. Game logic will rely on these field names (`action`, `noun1`, `preposition`, `noun2`, etc.) being present in the JSON stored in `result_buffer_addr`.
-        *   The Z-Machine game logic then uses this structured data (e.g., verb "take", noun1 "small brass key", etc.) from `result_buffer_addr` after `get_llm_result` confirms success.
+        *   This structured action format, now a direct JSON string in `result_buffer_addr`, is what game logic will work with. The VM handles unwrapping from the LLM API's specific response structure. Game logic should be able to parse this JSON string from `result_buffer_addr` directly. Adding `original_command` to the NLU output JSON can be useful for context or complex disambiguation in Z-code.
+        *   The Z-Machine game logic then uses this structured data (e.g., verb "take", noun1 "small brass key", etc.) by parsing the JSON string from `result_buffer_addr` after `get_llm_result` confirms success.
 
     *   **Sending Information to LLM (NLG - initiated by `start_llm_generate`)**:
         *   `prompt_text_addr`: Points to a Z-encoded string (e.g., "The player enters the Dragon's Lair. Describe it vividly.").
@@ -2754,9 +2766,8 @@ The final assignment of numerical opcode values needs to be done systematically 
                 "generated_text": "The air in the Dragon's Lair is thick with the smell of sulfur and ancient dust. Mountains of glittering gold coins and jewels rise in shimmering heaps, catching the unsteady light of flickering torches. A colossal red dragon, scales like obsidian shields, lies sleeping atop the largest hoard, its chest rising and falling with a sound like distant thunder..."
               }
             ]
-            // The VM extracts "generated_text", then converts it to Z-encoded format.
             ```
-            The VM expects the LLM's response for NLG tasks to be in this format, specifically looking for the `generated_text` field within the first element of the top-level array (as is common with Hugging Face Inference API). The VM will then extract and process this text.
+            The VM expects the LLM's response for NLG tasks to be in this format (or similar, depending on the model service), specifically looking for the main generated textual content (e.g., in a field like `generated_text`). The VM extracts this plain text string (typically UTF-8). This extracted plain text is then processed by the VM (converted to ZSCII or a sequence of Unicode code points based on `StrictZSCIICompatMode`, as detailed in Section 7 Player Interaction / Output Formatting) and this processed, game-ready string is written into `result_buffer_addr`.
 
 -   **Strategies for Fine-Tuning the LLM**:
     While pre-trained models can be powerful, fine-tuning an LLM on domain-specific data (interactive fiction commands, responses, and descriptive text) can significantly improve its performance and relevance.
@@ -2801,7 +2812,7 @@ The final assignment of numerical opcode values needs to be done systematically 
 
 -   **State Representation**: The complete game state is encapsulated within the Z-Machine's memory, primarily within its Dynamic Data Section. This includes:
     *   **Global Variables**: Current values of all 240 global variables (G00-G239), each being a 64-bit word.
-    *   **Object Data**: The current state of all game objects, including their parent-sibling-child relationships, attribute flags (e.g., `worn`, `lit`), and property values. While object definitions are in static memory, their dynamic state (e.g., current location, contents if a container, specific property values that can change) is part of the game state.
+    *   **Object Data**: The current state of all game objects, including their parent-sibling-child relationships, attribute flags (e.g., `worn`, `lit`), and property values. While object definitions are in static memory, their dynamic state (e.g., current location, contents if a container, specific property values that can change) is part of the game state. For Z-Machine Mark 2, the `attributes` field of each object in the object table (defined in Section 3, Static Data Section, Object Table) **is considered part of the dynamic game state** and must be saved during a `save` operation. This means that opcodes like `set_attr` and `clear_attr` modify a version of the attributes that is part of the saveable state, even if the initial object table resides in the Static Data Section loaded from the story file. The VM must ensure that these modifications are correctly captured and restored.
     *   **Player Status**: Key information about the player, such as current location (an object ID), inventory (list of object IDs), score, and turns taken. Some of these might be stored in dedicated global variables.
     *   **Program Counter (PC)**: The address of the next instruction to be executed. This is crucial for saving the exact point of execution.
     *   **Call Stack**: A record of active routine calls, including the return address for each call, local variables for each routine, and temporary values pushed during expression evaluation. The stack itself resides in the Dynamic Data Section.
@@ -2826,7 +2837,7 @@ The final assignment of numerical opcode values needs to be done systematically 
     *   **Global Variables (G00-G239)**: Stored as an array of 240 64-bit words at a fixed location, typically at the beginning of the Dynamic Data Section or referenced via a pointer from the header. They are accessed directly by opcodes like `store Gx, value` and `load Gx -> (result)`.
     *   **Local Variables (L00-L15)**: Stored on the game's call stack. When a routine is called, space for its local variables (as defined by the routine) is allocated on the stack. They are accessed relative to the current stack frame pointer. Opcodes like `store Lx, value` and `load Lx -> (result)` handle these. Local variables cease to exist when a routine returns.
     *   **Stack Variables (Temporary)**: The top of the stack can be used as a temporary variable, implicitly by some opcodes or explicitly using `push` and `pop`.
-    *   **Object Attributes**: Stored as bitfields within each object's entry in the object table. Opcodes like `set_attr`, `clear_attr`, and `test_attr` manipulate these. The object table itself might be in static memory, but a copy of attributes (or the parts that can change) might be in dynamic memory if objects can be created/destroyed or attributes are highly dynamic. For simplicity, we can assume the primary object table attributes are part of the dynamic state that needs saving.
+    *   **Object Attributes**: Object attributes are stored as bitfields within each object's entry. For ZM2, the `attributes` field of every object defined in the story file's object table is considered writable and part of the dynamic game state. The `save` operation must include the current state of all object attributes. Opcodes like `set_attr`, `clear_attr`, and `test_attr` directly manipulate this saveable version of the attributes.
     *   **Object Properties**: Stored in property lists associated with each object. `get_prop`, `put_prop`, `get_prop_addr`, `get_prop_len` opcodes access these. Property data can be variable length. Changes to properties are direct modifications in the Dynamic Data Section (or a dynamic copy of object data).
 
 -   **State Updates**:
@@ -2853,8 +2864,8 @@ The final assignment of numerical opcode values needs to be done systematically 
                 *   For `CMem`: The dynamic memory area is compressed (e.g., using a simple XOR difference from the initial state of dynamic memory, or a more complex algorithm like LZW). The chunk stores the compressed data.
                 *   For `UMem`: The dynamic memory area is stored uncompressed. Given the potential size with 64-bit words, compression is recommended.
                 *   The chunk needs to specify the start address and length of the memory block being saved.
-            *   **Stack Chunk (`Stks`)**: Contains a snapshot of the call stack, including return addresses, local variables, and temporary values for each frame.
-            *   **Program Counter Chunk (`PC__`)**: Explicitly stores the PC (though it might also be part of a general CPU state chunk).
+            *   **Stack Chunk (`Stks`)**: Contains a snapshot of the call stack. Each frame must serialize its 64-bit return Program Counter, the 64-bit previous frame pointer, the number of arguments passed to the routine, the variable reference for storing the routine's result, all 64-bit local variables, and any 64-bit temporary values pushed onto the evaluation stack portion of that frame.
+            *   **Program Counter Chunk (`PC__`)**: Explicitly stores the 64-bit Program Counter (PC). Other key 64-bit CPU registers like the Stack Pointer (SP) and current routine's frame pointer would also be saved, either in this chunk or a dedicated CPU state chunk.
             *   **(Optional) LLM State Chunk (`LLMs`)**: If recent LLM interactions need to be saved (e.g., conversation history snippets to maintain context across save/load), a dedicated chunk could store this.
         4.  **Output**: The VM writes these chunks to a file, forming the save game file. The `save` opcode would typically branch if the operation is successful.
 
@@ -2865,8 +2876,8 @@ The final assignment of numerical opcode values needs to be done systematically 
             *   The VM reads the memory chunk (`CMem` or `UMem`).
             *   If compressed, it's decompressed.
             *   The data is written back into the Z-Machine's Dynamic Data Section, overwriting its current content.
-        4.  **Stack Restoration (`Stks`)**: The call stack is cleared, and the saved stack frames are pushed back onto it. This restores local variables and return addresses.
-        5.  **Register Restoration**: The saved Program Counter is loaded into the PC register. Other saved VM registers (like SP, frame pointers) are also restored.
+        4.  **Stack Restoration (`Stks`)**: The call stack is cleared, and the saved stack frames (with their 64-bit local variables, 64-bit return addresses, etc.) are pushed back onto it.
+        5.  **Register Restoration**: The saved 64-bit Program Counter is loaded into the PC register. Other saved 64-bit VM registers (like SP, frame pointers) are also restored.
         6.  **(Optional) LLM State Restoration (`LLMs`)**: Restore any saved LLM context.
         7.  **Resuming Execution**: Unlike Z-Spec 1.1 `restore` which returns a value, ZM2 `restore` typically does not return to the caller. Instead, after successfully restoring the state, the VM immediately resumes execution from the restored Program Counter, effectively continuing the game from the exact point it was saved. If the restore fails, it branches.
 
@@ -2874,6 +2885,7 @@ The final assignment of numerical opcode values needs to be done systematically 
         *   **File Size**: Uncompressed dynamic memory can be large, though less so than with 128-bit. Efficient compression for `CMem` is still crucial.
         *   **Atomicity**: Save/restore operations should ideally be atomic to prevent corrupted state if an error occurs midway. This is an interpreter implementation concern.
         *   **Endianness**: Ensure consistent endianness handling when writing/reading multi-word values (like 64-bit addresses or data) in the save file. The header structure already specifies Big Endian for internal memory; this should carry over to save files.
+        *   **Address Sizes**: All addresses (PC, SP, frame pointers, pointers within data structures like object trees or property tables if their absolute addresses are somehow part of the dynamic state saved) stored in Quetzal chunks must be 64-bit.
 
 ## 7. Player Interaction
 
@@ -2989,10 +3001,10 @@ The Z-Machine Mark 2 operates on a continuous game loop, processing player input
                                                                                               | (If status_code == 1)
                                                                                               V
         +---------------------------+      +---------------------------------+      +--------------------------------------+
-        | Z-Code: Process LLM       |<-----| VM: get_llm_result(handle,      |<-----| Z-Code: Calls get_llm_result         |
-        | response from             |      | result_buffer_addr)             |      | to confirm data.                     |
-        | result_buffer_addr        |      | (Confirms data in buffer)       |      |                                      |
-        | or handle error           |      | (Returns status_code)           |      |                                      |
+        | Z-Code: Parses JSON string|<-----| VM: get_llm_result(handle,      |<-----| Z-Code: Calls get_llm_result         |
+        | from result_buffer_addr   |      | result_buffer_addr)             |      | to confirm data.                     |
+        | to get structured action, |      | (Confirms data in buffer)       |      |                                      |
+        | or handles error          |      | (Returns status_code)           |      |                                      |
         +---------------------------+      +---------------------------------+      +--------------------------------------+
         ```
     *   **VM Action (Error/Fallback Handling for Parsing, based on `check_llm_status` and `get_llm_result`)**:
@@ -3030,10 +3042,11 @@ The Z-Machine Mark 2 operates on a continuous game loop, processing player input
                                                                                                 | (If status_code == 1)
                                                                                                 V
         +---------------------------+      +---------------------------------+      +--------------------------------------+
-        | Z-Code: Process LLM text  |<-----| VM: get_llm_result(handle,      |<-----| Z-Code: Calls get_llm_result         |
-        | from result_buffer_addr   |      | result_buffer_addr)             |      | to confirm data.                     |
-        | (Z-encode, filter), print |      | (Confirms data in buffer)       |      |                                      |
-        | or handle error           |      | (Returns status_code)           |      |                                      |
+        | Z-Code: Uses game-ready   |<-----| VM: get_llm_result(handle,      |<-----| Z-Code: Calls get_llm_result         |
+        | string from               |      | result_buffer_addr)             |      | to confirm data.                     |
+        | result_buffer_addr (e.g., |      | (Confirms data in buffer)       |      |                                      |
+        | for printing), or handles |      | (Returns status_code)           |      |                                      |
+        | error                     |      |                                 |      |                                      |
         +---------------------------+      +---------------------------------+      +--------------------------------------+
         ```
     *   **Interaction (Memory)**: If using LLM generation, the VM handles writing the Z-encoded and filtered text into `result_buffer_addr` upon successful completion.
@@ -3093,7 +3106,7 @@ This section outlines considerations for developing a Z-Machine Mark 2 Virtual M
     *   **Networking (for LLM Integration)**:
         *   HTTP Client: Libraries like `libcurl` (C/C++), `reqwest` (Rust), `requests` (Python), Apache HttpClient (Java) to make API calls to Hugging Face or other LLM providers.
         *   JSON Parsing: Libraries like `serde_json` (Rust), `nlohmann/json` (C++), `json.hpp` (C++), `Jackson`/`Gson` (Java), `json` (Python) to construct and parse JSON payloads for LLM communication.
-    *   **BigInt Arithmetic**: Generally not needed for 64-bit operations as native types suffice.
+    *   **BigInt Arithmetic**: Native 64-bit integer types (`uint64_t`, `int64_t` in C++; `u64`, `i64` in Rust; `long` in Java; etc.) are sufficient for all ZM2 operations. BigInt libraries are not required for core ZM2 functionality.
 *   **Development Tools**:
     *   **Compiler/Interpreter**: Specific to the chosen language (e.g., `rustc`, `gcc`/`clang`, `go build`, Python interpreter).
     *   **Build System**: `cargo` (Rust), `cmake`/`make` (C++), `go build` system, `pip`/`poetry` (Python).
@@ -3165,7 +3178,7 @@ This section outlines considerations for developing a Z-Machine Mark 2 Virtual M
         *   Use a simple story file that uses the `start_llm_parse`, `check_llm_status`, and `get_llm_result` sequence. Provide controlled input and verify that the parsed output (from a mock or real LLM) is correctly interpreted by the game logic after the necessary polling.
         *   Use a simple story file for asynchronous LLM generation. Verify that the game can wait for and then correctly display the generated text.
 *   **System/Acceptance Testing (Using Test Story Files)**:
-    *   **Standard Test Suites**: Adapt existing Z-Machine test suites like "praxix.z5" or "cमेट" (if possible, by recompiling their source for ZM2 or creating analogous tests) to verify overall compliance. This will be challenging due to the 64-bit nature and new opcodes.
+    *   **Standard Test Suites**: Adapt existing Z-Machine test suites like "praxix.z5" or "cमेट" (if possible, by recompiling their source for ZM2 or creating analogous tests) to verify overall compliance. This will be challenging due to the 64-bit nature and new opcodes. A more viable long-term approach would be to develop a new, dedicated Z-Machine Mark 2 test suite ('zm2test.zm2' or similar) that specifically targets 64-bit operations, new EXT opcodes, LLM interaction mocks, and the expanded memory model.
     *   **Custom Test Stories**: Develop small story files specifically designed to test ZM2 features:
         *   A story that heavily uses all implemented opcodes.
         *   A story that tests LLM parsing for various command structures.
@@ -3178,16 +3191,25 @@ This section outlines considerations for developing a Z-Machine Mark 2 Virtual M
     *   Measure save/load times.
 *   **Debugging Aids**:
     *   Implement verbose logging options in the VM.
-    *   Develop a simple Z-Machine debugger (memory view, stack view, PC tracing, breakpoints).
+    *   Develop a simple Z-Machine debugger (memory view, stack view, PC tracing, breakpoints). This debugger should be capable of inspecting 64-bit values and addresses correctly. For LLM opcodes, it should ideally show the status of pending LLM requests and the content of LLM-related buffers.
 
-## 13. Key Citations
+## 13. References and Further Reading
 
--   Z-Machine Standards Document Overview
--   Large Language Models and Conversational User Interfaces for Interactive Fiction
--   LampGPT: LLM-Enhanced IF Experiences
--   AI Plays Interactive Fiction GitHub Repository
--   Why can't the parser just be an LLM?
--   Creating a Text Adventure Game with ChatGPT
--   How to build a Large Language Model (LLM) to Generate Creative Writing
--   Best realistic story telling LLM?
--   Overview of Z-machine architecture
+The following resources and topics provide context or inspiration for the Z-Machine Mark 2 design:
+
+*   **Z-Machine Standards Documents**:
+    *   "The Z-Machine Standards Document" by Graham Nelson, Version 1.0 or 1.1. (Primary reference for original Z-Machine architecture).
+    *   Quetzal Saved Game Format standard.
+*   **LLMs in Interactive Fiction - Research and Concepts**:
+    *   Discussions on Large Language Models and Conversational User Interfaces for Interactive Fiction (e.g., academic papers, blog posts exploring this area).
+    *   LampGPT: LLM-Enhanced IF Experiences (Specific project or paper, if identifiable).
+    *   AI Plays Interactive Fiction GitHub Repository (If this is a known repository, a link would be ideal. E.g., `[AI Plays Interactive Fiction GitHub Repository](link-to-repo)`).
+    *   General discussions on "Why can't the parser just be an LLM?".
+*   **LLM Implementation and Creative Writing**:
+    *   Tutorials or articles on "Creating a Text Adventure Game with ChatGPT" or similar LLMs.
+    *   Guides on "How to build a Large Language Model (LLM) to Generate Creative Writing".
+    *   Community discussions on "Best realistic story telling LLM?".
+*   **Z-Machine Architecture Overviews**:
+    *   General overviews and explanations of the Z-machine architecture (e.g., from IFWiki, blogs, or articles).
+
+Developers implementing or extending the Z-Machine Mark 2 are encouraged to consult the original Z-Machine Standards Document for foundational concepts and to stay abreast of current research in LLM integration for interactive experiences.
