@@ -86,11 +86,14 @@ The header is a fixed-size block at the beginning of the memory (e.g., the first
 | 76             | 8            | `object_table_start`           | Byte address of the object table within the Static Data Section.                                           |
 | 84             | 8            | `dictionary_start`             | Byte address of the dictionary within the Static Data Section.                                             |
 | 92             | 8            | `abbreviation_table_start`     | Byte address of the text abbreviation table within the Static Data Section.                                |
-| 100            | 4            | `flags1`                       | Various flags (e.g., transcripting, fixed-pitch font required). (Details TBD)                              |
-| 104            | 4            | `flags2`                       | More flags. (Details TBD)                                                                                  |
+| 100            | 4            | `flags1`                       | Various flags. See details below:<br>\| Bit   \| Name                     \| Description (1 = ON/Required, 0 = OFF/Optional/Default) \|<br>\|-------\|--------------------------\|-----------------------------------------------------------\|<br>\| 0     \| `Transcripting`          \| VM attempts to record player input and game output.       \|<br>\| 1     \| `FixedPitchFont`         \| Game expects a fixed-pitch font for proper layout.        \|<br>\| 2     \| `StrictZSCIICompatMode`  \| VM attempts to transliterate Unicode to ZSCII. Default: Unicode. \|<br>\| 3     \| `DebugMode`              \| VM may provide verbose errors or debug features.          \|<br>\| 4     \| `LLMParseEnable`         \| `start_llm_parse` is active. Default: ON.                 \|<br>\| 5     \| `LLMGenerateEnable`      \| `start_llm_generate` is active. Default: ON.              \|<br>\| 6     \| `DivByZeroHalt`          \| Division by zero causes VM halt. Default: Halt. (Else returns 0) \|<br>\| 7     \| `SaveLoadEnable`         \| `save` and `restore` opcodes active. Default: ON.         \|<br>\| 8-31  \| `Reserved`               \| Must be 0.                                                \| |
+| 104            | 4            | `flags2`                       | More flags. See details below:<br>\| Bit   \| Name                     \| Description (1 = ON, 0 = OFF/Default)                      \|<br>\|-------\|--------------------------\|------------------------------------------------------------\|<br>\| 0     \| `ForceLLMSync`           \| VM attempts to make LLM calls synchronous. Default: OFF.   \|<br>\| 1     \| `Enable拡張Opcodes`      \| Enables hypothetical extended, non-standard opcodes.       \|<br>\| 2     \| `BypassLLMModeration`    \| VM might bypass its own LLM content moderation. *Use with caution.* \|<br>\| 3-31  \| `Reserved`               \| Must be 0.                                                 \| |
 | 108            | 8            | `llm_api_endpoint_ptr`         | Pointer to a null-terminated string within Static Data for the LLM API endpoint. 0 if not used.            |
-| 116            | 8            | `llm_parameters_ptr`           | Pointer to a structure/string within Static Data for LLM parameters (e.g., model name). 0 if not used.   |
-| 124            | 900          | `reserved`                     | Reserved for future expansion. Must be initialized to zero.                                                |
+| 116            | 8            | `llm_parameters_ptr`           | Pointer to a structure/string within Static Data for LLM parameters (e.g., model name). 0 if not used.<br>This pointer references a null-terminated JSON string within the Static Data Section. If this pointer is 0, the VM will use its own default LLM parameters.<br>The JSON string should contain an object with the following optional key-value pairs. If a key is omitted, the VM will use a sensible default for that parameter:<br><pre><code>{\n  "nlu_model_id": "string",     // Hugging Face model ID for Natural Language Understanding (parsing player input)\n  "nlg_model_id": "string",     // Hugging Face model ID for Natural Language Generation (descriptive text, NPC dialogue)\n  "default_nlu_temperature": "number", // 0.0 to 2.0, e.g., 0.5 (lower is more deterministic for parsing)\n  "default_nlg_temperature": "number", // 0.0 to 2.0, e.g., 0.9 (higher is more creative for generation)\n  "default_nlu_max_tokens": "integer", // Max tokens the NLU model should generate for the structured output, e.g., 100\n  "default_nlg_max_tokens": "integer", // Max tokens the NLG model should generate for descriptive text, e.g., 250\n  "api_base_url": "string"      // Optional: Override Hugging Face API base URL (e.g., for self-hosted inference endpoint)\n}</code></pre><br>**Example in Static Data:**<br><pre><code>// Somewhere in Static Data Section, pointed to by llm_parameters_ptr\nmy_llm_params:\n  DB "{",0\n  DB "  \"nlu_model_id\": \"mistralai/Mistral-7B-Instruct-v0.1\",",0\n  DB "  \"nlg_model_id\": \"gpt2\",",0\n  DB "  \"default_nlg_temperature\": 0.85,",0\n  DB "  \"default_nlg_max_tokens\": 300",0\n  DB "}",0\n  DB 0 // Null terminator for the string</code></pre><br>The VM reads this JSON string at startup. If the JSON is malformed or a parameter value is invalid, the VM should report an error or fall back to its internal defaults for the problematic parameter(s). |
+| 124            | 8            | `context_globals_list_ptr`     | Pointer to a null-terminated list of 1-byte global variable indices (0-239) for `get_context_as_json`. 0 if not used. |
+| 132            | 8            | `recent_events_buffer_ptr`     | Pointer to the start of a buffer for recent event strings (for `get_context_as_json`). 0 if not used.         |
+| 140            | 8            | `recent_events_count_ptr`      | Pointer to a 1-byte variable holding the count of valid event strings in `recent_events_buffer_ptr`. 0 if not used. |
+| 148            | 876          | `reserved`                     | Reserved for future expansion. Must be initialized to zero.                                                |
 | **Total Size** | **1024**     |                                |                                                                                                            |
 
 **Code and Data Section Organization and Access:**
@@ -134,8 +137,38 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
 
 3.  **Static Data Section (Variable Size)**:
     *   **Content**: Contains game data that is generally fixed at compile time. This includes:
-        *   **Object Table**: Defines all game objects, their initial attributes (as bitfields), parent-sibling-child relationships (object IDs), and pointers to their property tables. Each object entry has a standardized size.
-        *   **Property Tables**: Store default property values for objects. Each property consists of an ID, length, and data.
+        *   **Object Table**: Defines all game objects. The table starts at the address specified by `object_table_start` in the Header. It's an array of object entries. The total number of objects can be inferred if there's a standard object 0 or a specific field for object count, or by dividing the relevant section of static data by object entry size. Object IDs are 1-based indices into this table (Object 0 is often unused or has special meaning). Each object entry has a fixed size of 40 bytes and is structured as follows (all multi-byte values are Big Endian):
+            ```
+            | Offset | Size (Bytes) | Field Name             | Description                                                                 |
+            |--------|--------------|------------------------|-----------------------------------------------------------------------------|
+            | 0      | 8            | `attributes`           | 64-bit bitfield for object attributes (e.g., portable, wearable, lit).      |
+            | 8      | 8            | `parent_obj_id`        | 64-bit ID of the parent object. 0 if no parent (e.g., for a room object).   |
+            | 16     | 8            | `sibling_obj_id`       | 64-bit ID of the next sibling object. 0 if no more siblings.                |
+            | 24     | 8            | `child_obj_id`         | 64-bit ID of the first child object. 0 if no children.                      |
+            | 32     | 8            | `property_table_ptr`   | Absolute byte address of this object's property table. 0 if no properties.  |
+            ```
+            Object IDs are 64-bit values. For ZM2, an object ID `N` typically refers to the Nth entry in the object table (1-indexed). So, to find object `N`, the address would be `object_table_start + ((N-1) * 40)`.
+        *   **Property Tables**: Each object can have an associated property table, pointed to by its `property_table_ptr`. A property table contains a list of properties for that object. The format of a property table begins with a 64-bit text address for the object's 'short name' (a Z-encoded string). This is followed by a sequence of individual property entries. The end of the property list is typically indicated by a property block starting with a property ID of 0.
+            Each individual property entry is structured as follows:
+            ```
+            | Size (Bytes)         | Field Name      | Description                                                                      |
+            |----------------------|-----------------|----------------------------------------------------------------------------------|
+            | 1 (or 2, see below)  | `id_and_length` | Combined property ID and length of property data. See details below.             |
+            | Variable (`L`)       | `data`          | Property data itself (L bytes).                                                  |
+            ```
+            **Simplified and ZM2-Specific `id_and_length` Encoding:**
+            *   Each property entry starts with one or two bytes defining its ID and length.
+            *   Byte 1:
+                *   Bits 0-5: Property ID (1-63). An ID of 0 marks the end of the property list.
+                *   Bit 6: Reserved (0).
+                *   Bit 7: Length specifier.
+                    *   If 0: Length of data is 1 byte. Property data (1 byte) follows. Total: 2 bytes (byte1 + data).
+                    *   If 1: A second byte follows Byte 1.
+            *   Byte 2 (only if Bit 7 of Byte 1 is 1):
+                *   Bits 0-7: Length of data `L` (1-255 bytes). Property data (`L` bytes) follows. Total: 2 + `L` bytes.
+                *   (Note: A length of 0 in Byte 2 is invalid. Lengths from this byte are 1-255).
+            *   Property data is always byte-aligned. Property values are interpreted according to game logic (e.g., as numbers, pointers, or Z-encoded strings).
+            *   Default properties are not explicitly handled by this format; all properties for an object must be listed if this structure is used.
         *   **Global Variables Initial Values Table**: A table holding the initial 64-bit values for all 240 global variables. These are copied to the dynamic memory area for global variables upon game initialization.
         *   **Dictionary**: A list of ZSCII-encoded words recognized by the traditional parser (if used as a fallback). Each word is typically fixed-length, padded with nulls. Associated with data like word ID or pointers to grammar tokens.
         *   **Text Abbreviation Table**: A table of pointers to frequently used Z-encoded strings. Used by `print_abbrev` opcode.
@@ -162,7 +195,7 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
 *   **Characters (NPCs)**: Also represented as **Objects**. NPC-specific logic is handled by routines in the Code Section. Dialogue might be stored as Z-encoded strings, selected by game logic, or generated via LLM generation opcodes using prompts stored as strings in the Static Data section. NPC state (e.g., mood, knowledge) is stored in its object properties or related global variables.
 *   **Game Logic (Puzzles, Rules, Event Handling)**: Encoded as routines (functions) in the **Code Section**. These routines manipulate game state (variables, object properties/locations) and interact with the player via I/O opcodes or the asynchronous LLM interaction model.
     *   Example: A puzzle might involve checking if the player has a specific object (`get_parent`) and is in a specific room (global variable for player location), then changing a property on another object (`put_prop`) to signify the puzzle is solved.
-*   **Text**: All printable text is stored as Z-encoded strings (see Z-Machine Standard 1.1, Appendix C for ZSCII and string encoding details, adapted for potential Unicode characters via `print_unicode`). Abbreviations are used to save space.
+*   **Text**: All printable text is stored as Z-encoded strings (see Z-Machine Standard 1.1, Appendix C for ZSCII and string encoding details, adapted for potential Unicode characters via `print_unicode`). Abbreviations are used to save space. This adaptation means that standard Z-Machine text processing opcodes (e.g., `print`, `print_addr`) primarily handle ZSCII characters and Z-encoded abbreviations. For characters outside the ZSCII set, the `print_unicode (char_code)` opcode must be used. Story file text intended for direct printing via standard opcodes should primarily use ZSCII and Z-encoding. Text requiring broader Unicode support will typically be constructed or processed at runtime and printed character by character using `print_unicode` if necessary. Text generated by LLMs, which is typically UTF-8, will be processed by the VM before being made available to Z-code. This involves converting it into a sequence of ZSCII characters (for direct use with `print` opcodes if possible) and/or Unicode character codes (for use with `print_unicode`). See Section 7 (Player Interaction), subsection "Output Formatting and Presentation" for details on runtime handling.
 
 The story file is essentially a serialized form of the static parts of the Z-Machine's memory, plus the executable code. The VM reads this file to populate its memory and then begins execution. The Dynamic Data Section in memory is where the live game state evolves from the initial state defined in the Static Data.
 
@@ -255,8 +288,8 @@ This list provides examples. A full list will be maintained in a separate ZM2_Op
             *   Bit 0 (0x01): Include player inventory.
             *   Bit 1 (0x02): Include objects in current location.
             *   Bit 2 (0x04): Include visible objects in adjacent locations (1 level away).
-            *   Bit 3 (0x08): Include global game variables (a predefined subset, not all 240).
-            *   Bit 4 (0x10): Include recent event summaries (if tracked by game logic and stored in a known format/location).
+            *   Bit 3 (0x08): Include a subset of global game variables. This subset is defined by a null-terminated list of 1-byte global variable indices (0-239) stored at an address pointed to by a new Header field: `context_globals_list_ptr` (type: ADDR, 8 bytes). If `context_globals_list_ptr` is 0, no globals are included by this flag. The JSON output will use 'gX' as keys, where X is the variable index (e.g., 'g5', 'g120').
+            *   Bit 4 (0x10): Include recent event summaries. These are expected to be stored as a series of null-terminated Z-encoded strings. A new Header field, `recent_events_buffer_ptr` (type: ADDR, 8 bytes), points to the start of this buffer. Another Header field, `recent_events_count_ptr` (type: ADDR, 8 bytes), points to a 1-byte variable holding the current number of valid event strings in the buffer (acting as a circular buffer index or count). The VM reads up to a reasonable maximum (e.g., 5-10) of these strings. If `recent_events_buffer_ptr` or `recent_events_count_ptr` is 0, no events are included.
             *   (Further bits can be defined for more specific context elements like character states, quest logs, etc.)
         *   `max_depth (SC/VAR)`: Maximum depth for exploring object trees (e.g., contents of containers within containers).
         *   `output_buffer_addr (ADDR)`: Byte address of a buffer where the JSON string will be written by the VM.
@@ -291,7 +324,7 @@ This list provides examples. A full list will be maintained in a separate ZM2_Op
         ```
     *   **Notes**:
         *   The VM would need a robust internal JSON generation capability.
-        *   The exact structure of the JSON can be standardized by the ZM2 specification or be somewhat flexible, with the LLM prompts engineered to understand the provided structure.
+        *   The exact structure of the JSON can be standardized by the ZM2 specification or be somewhat flexible, with the LLM prompts engineered to understand the provided structure. The provided JSON structure in the "Conceptual JSON Output" is an illustrative example. While the keys shown (e.g., `player_location_id`, `player_inventory`, `visible_objects`, `global_vars_subset`, `recent_events`) are recommended for consistency if the corresponding `object_scope_flag` bits are set, LLM prompts should be engineered to be flexible. The VM guarantees well-formed JSON if the operation is successful.
         *   This opcode helps abstract away complex Z-code for gathering common contextual data.
 
 **Extended Opcodes for LLM Integration (Asynchronous):**
@@ -391,6 +424,284 @@ These opcodes facilitate non-blocking interaction with an external LLM. They req
 Error messages should, where possible, include the current Program Counter (address of the faulting instruction) and any relevant operand values to aid debugging.
 The general philosophy is to fail fast and clearly for programmer errors (invalid opcodes, bad variable refs) but provide mechanisms for game logic to handle runtime issues from LLM interactions (via status codes).
 
+## 4.A Detailed Opcode Specification
+
+### 4.A.0 Packed Address (PADDR) Encoding and Expansion
+
+Before detailing individual opcodes, it's crucial to understand Packed Addresses (PADDRs), a mechanism used to efficiently encode addresses within instruction streams.
+
+**1. Purpose of PADDRs:**
+PADDRs are primarily used to save space in the instruction stream when an opcode needs to refer to an address within the **Code Section** (e.g., for a routine call) or the **Static Data Section** (e.g., for printing a string). Instead of embedding a full 64-bit absolute address directly as an operand, a shorter, packed representation is used.
+
+**2. PADDR Encoding in Instructions:**
+A PADDR is a 32-bit value embedded directly in the instruction stream as part of an opcode's operands. This 32-bit value is read as an unsigned integer, adhering to the Z-Machine Mark 2's general rule of Big Endian byte order for multi-byte values within instruction streams.
+
+**3. PADDR Expansion Formula:**
+The VM expands a PADDR into a full 64-bit absolute byte address at runtime using the following general formula:
+
+`AbsoluteByteAddress = BaseAddress + PackedValue`
+
+Where:
+*   `PackedValue`: The 32-bit unsigned integer value read from the instruction stream.
+*   `BaseAddress`: A 64-bit absolute byte address determined by the type of PADDR or the context of the opcode using it.
+
+**4. Base Addresses and PADDR Types:**
+The `BaseAddress` used in the expansion formula depends on the type of resource the PADDR refers to. For Z-Machine Mark 2, the following PADDR types are defined:
+
+*   **`RoutinePADDR`**:
+    *   Used by opcodes like `call` to refer to the starting address of a routine within the Code Section.
+    *   `BaseAddress`: The value of `code_section_start` (obtained from the Header).
+    *   Expansion: `AbsoluteByteAddress = code_section_start + PackedValue`
+    *   `PackedValue` is the 32-bit unsigned offset from the start of the Code Section.
+
+*   **`StringPADDR`**:
+    *   Used by opcodes like `print_paddr` (a hypothetical opcode for printing packed address strings) to refer to a Z-encoded string within the Static Data Section.
+    *   `BaseAddress`: The value of `static_data_section_start` (obtained from the Header).
+    *   Expansion: `AbsoluteByteAddress = static_data_section_start + PackedValue`
+    *   `PackedValue` is the 32-bit unsigned offset from the start of the Static Data Section.
+
+The type of PADDR (RoutinePADDR vs. StringPADDR) is typically implicitly determined by the opcode that consumes it. For example, a `call` opcode always expects a `RoutinePADDR`.
+
+**5. Scale Factor:**
+For the current specification, the `ScaleFactor` in the conceptual formula `BaseAddress + (PackedValue * ScaleFactor)` is **1** for both `RoutinePADDR` and `StringPADDR`. This means the `PackedValue` is a direct byte offset from the respective base address.
+
+*Note: Future revisions may introduce different scale factors or additional PADDR types if finer granularity (e.g., word-addressing for specific data structures) or larger relative packed address ranges (beyond 4GB with a 32-bit value) are needed for specific purposes. For now, PADDRs are 32-bit byte offsets from their respective section bases.*
+
+**6. Limitations:**
+The use of a 32-bit `PackedValue` with a `ScaleFactor` of 1 imposes an addressing limitation:
+*   A `RoutinePADDR` can only address locations up to 2<sup>32</sup> - 1 bytes (approximately 4GB) from the `code_section_start`.
+*   A `StringPADDR` can only address locations up to 2<sup>32</sup> - 1 bytes (approximately 4GB) from the `static_data_section_start`.
+
+Story files where targeted routines or strings reside beyond this 4GB offset from their respective section base addresses cannot use these PADDR types to refer to them and would require full 64-bit address operands or alternative mechanisms.
+
+### 1. Introduction to Opcode Specification
+
+This section provides the detailed specification for each Z-Machine Mark 2 opcode. Opcode numbers (values) will be assigned systematically. For opcodes adapted from the Z-Machine Standard 1.1, the original numbers may be used if they fit within a new, coherent numbering scheme designed for ZM2; otherwise, a clear mapping or new number will be provided. New ZM2-specific opcodes, particularly those for LLM integration or 64-bit specific operations, will have distinct numbers.
+
+All multi-byte values within instruction streams, including the opcode itself and any literal operands, are stored in **Big Endian** format, consistent with the overall memory model of the Z-Machine Mark 2.
+
+### 2. Opcode Definition Template
+
+Each opcode will be defined using the following structure:
+
+*   **`Mnemonic`**: The textual representation of the opcode (e.g., `add`).
+*   **`Opcode Value`**: The unique hexadecimal value identifying the opcode (e.g., `0x0120`). Specific values are illustrative examples in this document.
+*   **`Form`**: The general classification of the opcode based on its operand structure:
+    *   `0OP`: No operands.
+    *   `1OP`: One operand.
+    *   `2OP`: Two operands.
+    *   `VAROP`: Variable number of operands.
+    *   `EXT`: Extended opcodes, typically for new ZM2 features like LLM interaction or specialized utilities.
+*   **`Operand Types`**: A detailed list of operands the opcode takes. This includes:
+    *   `type_byte(s)`: Description of byte(s) that specify the types of subsequent operands, if applicable (common in 2OP and VAROP).
+    *   `operand1 (type)`: Name and type of the first operand (e.g., `value (Small Constant/Variable)`). Types can be Small Constant (SC), Large Constant (LC), Variable Reference (VAR), Packed Address (PADDR), Address (ADDR - which itself could be LC or VAR).
+    *   `operand2 (type)`, ... `operandN (type)`: Subsequent operands.
+    *   `store_variable_ref? (Variable Reference)`: Indicates if a variable reference for storing the result follows.
+    *   `branch_data?`: Indicates if branch information follows the opcode and its operands.
+*   **`Description`**: A concise summary of what the opcode does.
+*   **`Operation Details`**: A step-by-step description of the opcode's logic. This includes:
+    *   How operands are read from the instruction stream or memory.
+    *   The computation or action performed.
+    *   How the stack is affected (push, pop, frame creation/destruction).
+    *   How the Program Counter (PC) is updated (e.g., standard advance, jump, call).
+*   **`Stores Result To`**: Specifies where the primary result of the operation is stored (e.g., a specific variable, top of stack, an implicit location).
+*   **`Branches If`**: For branching opcodes, the condition that causes a branch, and how the branch offset is determined and applied.
+*   **`Side Effects`**: Any other changes to the VM state not covered by result storage or branching (e.g., modification of status flags, turn counters, I/O operations).
+*   **`Error Conditions`**: Specific errors the opcode might trigger (e.g., division by zero, invalid object ID, stack overflow/underflow, address out of bounds).
+
+### 3. Example Opcode Definitions
+
+#### a. `rtrue` (0OP)
+
+*   **`Mnemonic`**: `rtrue`
+*   **`Opcode Value`**: `0x00B0` (Example)
+*   **`Form`**: `0OP`
+*   **`Operand Types`**: None.
+*   **`Description`**: Returns true (1) from the current routine.
+*   **`Operation Details`**:
+    1.  The current routine's stack frame is validated and prepared for removal.
+    2.  The Program Counter (PC) is set to the return address stored in the current stack frame.
+    3.  The current stack frame is popped from the call stack, restoring the previous frame pointer.
+*   **`Stores Result To`**: The 64-bit integer value `1` is stored into the variable indicated by the `store_variable_ref` operand of the `call` opcode that invoked the current routine.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Call stack depth decreases by one.
+*   **`Error Conditions`**:
+    *   Stack underflow if called when no routine call is active (e.g., from top-level execution).
+
+#### b. `jz` (1OP)
+
+*   **`Mnemonic`**: `jz`
+*   **`Opcode Value`**: `0x0181` (Example)
+*   **`Form`**: `1OP`
+*   **`Operand Types`**: `value (Small Constant/Variable)`
+*   **`Description`**: Jump if value is zero.
+*   **`Operation Details`**:
+    1.  Reads the `value` operand. If it's a Small Constant, it's used directly. If it's a Variable, its content is read.
+    2.  If the (read) `value` is equal to 0, a branch is performed.
+    3.  If the value is not 0, execution continues with the instruction immediately following the branch data.
+*   **`Stores Result To`**: Does not store a result.
+*   **`Branches If`**: `value == 0`.
+    *   The branch information follows the opcode and its `value` operand.
+    *   It consists of a single byte. Bit 7 determines if the branch is "on true" (1) or "on false" (0) - for `jz` this implies the condition itself determines if we branch. Bit 6 determines if the offset is 1 or 2 bytes. Bits 0-5 of this byte contain the top 6 bits of the offset.
+    *   If bit 6 is 0, the next byte contains the lower 8 bits of the offset, forming a 14-bit signed offset (`((byte1 & 0x3F) << 8) | byte2`).
+    *   If bit 6 is 1, the offset is implicitly short and the jump is to fixed locations (details TBD, or this form is simplified to always use 14-bit offset).
+    *   For this example, let's assume a common Z-Machine branch: a 14-bit signed offset. The offset is calculated from the address *after* the branch data itself. A branch to offset 0 means "return false from current routine", offset 1 means "return true from current routine". Other values are added to PC.
+*   **`Side Effects`**: PC may be modified.
+*   **`Error Conditions`**: Invalid variable reference if `value` specifies an invalid variable.
+
+#### c. `add` (2OP)
+
+*   **`Mnemonic`**: `add`
+*   **`Opcode Value`**: `0x0220` (Example)
+*   **`Form`**: `2OP`
+*   **`Operand Types`**: `operand1 (Small Constant/Variable)`, `operand2 (Small Constant/Variable)`, `store_variable_ref (Variable Reference)`
+    *   Operand types for `operand1` and `operand2` are determined by type bytes following the opcode itself.
+*   **`Description`**: Adds `operand1` and `operand2`, stores the 64-bit result in `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Reads `operand1`.
+    2.  Reads `operand2`.
+    3.  Computes `result = (operand1 + operand2) & 0xFFFFFFFFFFFFFFFF` (unsigned 64-bit addition, wraps on overflow).
+    4.  Stores `result` into the variable specified by `store_variable_ref`.
+    5.  PC advances past this instruction and its operands.
+*   **`Stores Result To`**: `store_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: None.
+*   **`Error Conditions`**: Invalid variable reference for operands or `store_variable_ref`.
+
+#### d. `call` (VAROP)
+
+*   **`Mnemonic`**: `call`
+*   **`Opcode Value`**: `0x03E0` (Example)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**: `routine_paddr (PADDR)`, `arg0 (Small Constant/Variable)`, ..., `argN (Small Constant/Variable)` (up to 7 args), `store_variable_ref (Variable Reference)`
+    *   Operand types for `arg0` through `argN` are determined by type byte(s) following the opcode.
+    *   The `routine_paddr` is the first operand read.
+*   **`Description`**: Calls the routine at the packed address `routine_paddr`, passing up to 7 arguments. Stores the routine's return value into `store_variable_ref`.
+*   **`Operation Details`**:
+    1.  Read `routine_paddr` operand. Resolve it to an absolute byte address in the Code Section. This is the target routine address.
+    2.  Read the type byte(s) for arguments. For each argument supplied:
+        *   Read the argument value according to its type (Small Constant or Variable).
+    3.  At the target routine address, the first byte specifies the number of local variables (0-15) for that routine.
+    4.  Push a new stack frame onto the call stack. The frame contains:
+        *   Return PC (address of the instruction after this `call` opcode and all its operands).
+        *   Previous frame pointer.
+        *   The `store_variable_ref` where the routine's result will be stored.
+        *   Number of arguments supplied to the call.
+        *   Arguments themselves (arg0, arg1, ... argN).
+        *   Space for local variables (initialized to 0), count taken from routine header.
+    5.  Set PC to the target routine address, immediately after the byte specifying number of locals.
+*   **`Stores Result To`**: The routine's return value (from `ret`, `rtrue`, `rfalse`) will be stored in `store_variable_ref` when the called routine returns.
+*   **`Branches If`**: Does not branch itself, but transfers control to the called routine.
+*   **`Side Effects`**: Call stack depth increases. A new stack frame is created.
+*   **`Error Conditions`**:
+    *   Invalid `routine_paddr` (e.g., points outside code section, not to a valid routine).
+    *   Stack overflow if call stack exceeds its maximum depth.
+    *   Invalid variable references for arguments or `store_variable_ref`.
+    *   Calling a routine with more arguments than it's designed to handle (behavior TBD, may truncate or error).
+
+#### e. `start_llm_parse` (EXT)
+
+*   **`Mnemonic`**: `start_llm_parse`
+*   **`Opcode Value`**: `0xEE00` (Example, assuming `EE` prefix for EXT LLM opcodes)
+*   **`Form`**: `EXT`
+*   **`Operand Types`**: `input_text_addr (Large Constant/Variable Address)`, `context_data_addr (Large Constant/Variable Address)`, `result_buffer_addr (Large Constant/Variable Address)`, `max_result_len (Large Constant/Variable)`, `store_handle_variable_ref (Variable Reference)`
+    *   Operand types determined by a type byte following the opcode.
+*   **`Description`**: Initiates an asynchronous LLM parsing task for the ZSCII string at `input_text_addr` using context from `context_data_addr`. The LLM's structured response will eventually be placed in `result_buffer_addr`.
+*   **`Operation Details`**:
+    1.  Read all operands according to their types.
+    2.  Validate `input_text_addr`, `context_data_addr`, and `result_buffer_addr` (e.g., check if they are valid memory regions).
+    3.  Validate `max_result_len` (e.g., must be > 0).
+    4.  Check `flags1.LLMParseEnable`. If this flag is OFF (0):
+        *   Store 0 (or a specific error code like `LLM_ERR_DISABLED`) into `store_handle_variable_ref`.
+        *   Return (PC advances past this instruction and its operands).
+    5.  Generate a new, unique 64-bit handle for this LLM request. This handle should not be 0.
+    6.  The VM internally records the request details: handle, input text address, context data address, result buffer address, max result length, and the type of request (parse). This information is queued for the VM's asynchronous LLM task manager.
+    7.  The actual HTTP API call to the LLM service is *not* made synchronously by this opcode. It is managed by the VM's internal processes, triggered by game calls to `check_llm_status`.
+*   **`Stores Result To`**: The newly generated 64-bit `handle` (or 0/error code if `LLMParseEnable` is false or immediate validation fails) is stored in `store_handle_variable_ref`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: An LLM request is queued within the VM.
+*   **`Error Conditions`**:
+    *   Invalid memory address for `input_text_addr`, `context_data_addr`, or `result_buffer_addr`.
+    *   `max_result_len` is zero or unreasonably small.
+    *   `LLMParseEnable` flag in `flags1` is false.
+    *   Failure to generate a unique handle (highly unlikely).
+    *   Invalid variable reference for `store_handle_variable_ref` or any variable operands.
+
+#### f. `get_context_as_json` (EXT)
+
+*   **`Mnemonic`**: `get_context_as_json`
+*   **`Opcode Value`**: `0xEE02` (Example)
+*   **`Form`**: `EXT`
+*   **`Operand Types`**: `object_scope_flag (Small Constant/Variable)`, `max_depth (Small Constant/Variable)`, `output_buffer_addr (Large Constant/Variable Address)`, `max_output_len (Large Constant/Variable)`, `store_status_variable_ref (Variable Reference)`
+    *   Operand types determined by a type byte following the opcode.
+*   **`Description`**: Collects relevant game state information based on `object_scope_flag` and `max_depth`, formats it as a JSON string, and writes it to `output_buffer_addr`.
+*   **`Operation Details`**:
+    1.  Read all operands according to their types.
+    2.  Validate `output_buffer_addr` and `max_output_len`.
+    3.  Based on `object_scope_flag` bits and `max_depth`:
+        *   Gather player inventory.
+        *   Gather objects in the current location.
+        *   Gather specified global variables.
+        *   (Other context elements as defined by the flag).
+    4.  Construct a JSON string representing this gathered information.
+    5.  Get the length of the generated JSON string.
+    6.  If JSON string length (including null terminator) > `max_output_len`:
+        *   Store status code `1` (Output Buffer Too Small) into `store_status_variable_ref`.
+        *   Optionally, write a truncated (but still valid, if possible) JSON or an error JSON to `output_buffer_addr`.
+        *   Return.
+    7.  Write the complete JSON string (including null terminator) to `output_buffer_addr`.
+    8.  Store status code `0` (Success) into `store_status_variable_ref`.
+*   **`Stores Result To`**: A `status_code` is stored in `store_status_variable_ref`:
+    *   `0`: Success.
+    *   `1`: Output Buffer Too Small.
+    *   `2`: Invalid Scope Flag (unrecognized bits set in `object_scope_flag`).
+    *   `3`: Internal JSON Generation Error (e.g., VM failed to serialize data).
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Memory at `output_buffer_addr` is overwritten.
+*   **`Error Conditions`**:
+    *   Invalid `output_buffer_addr`.
+    *   `max_output_len` is too small to hold even a minimal JSON structure (e.g., `{}`).
+    *   Invalid variable references for operands or `store_status_variable_ref`.
+
+#### g. `sread` (VAROP)
+
+*   **`Mnemonic`**: `sread`
+*   **`Opcode Value`**: `0x03E8` (Example)
+*   **`Form`**: `VAROP`
+*   **`Operand Types`**: `text_buffer_addr (Large Constant/Variable Address)`, `parse_buffer_addr (Large Constant/Variable Address)` (Optional, 0 if not used)
+    *   Operand types determined by a type byte following the opcode.
+*   **`Description`**: Reads player input into `text_buffer_addr`. If `parse_buffer_addr` is non-zero, tokenizes the input using the game's dictionary and stores the parse information in `parse_buffer_addr`. This opcode does not directly interact with the LLM.
+*   **`Operation Details`**:
+    1.  Read `text_buffer_addr` and `parse_buffer_addr` operands.
+    2.  Display an input prompt to the player (e.g., "> ").
+    3.  Read a line of text from the player. The maximum number of characters to read should be taken from the first byte of `text_buffer_addr` (similar to Z-Spec 1.1, S13.3 for V1-V4, or a fixed reasonable maximum for V5+ like 255 characters, adapted for ZM2). Store the actual number of characters read into the second byte of `text_buffer_addr`, followed by the ZSCII characters themselves. The text is null-terminated if space allows.
+    4.  **Parse Buffer Processing**: If `parse_buffer_addr` is non-zero:
+        *   The traditional Z-Machine parsing routine is invoked.
+        *   **Reference Z-Machine Standard:** The format of the data written to `parse_buffer_addr` closely follows the Z-Machine Standard 1.1, Section 13 ('The Dictionary and Lexical Analysis'). However, adaptations for Z-Machine Mark 2's 64-bit architecture apply:
+        *   **Maximum Words:** The first byte of `parse_buffer_addr` specifies the maximum number of textual words to parse from the input.
+        *   **Number of Parsed Words:** The second byte of `parse_buffer_addr` will store the actual number of words parsed by the routine.
+        *   **Word Entry Structure:** Each subsequent word entry in the parse buffer, for each parsed word, will consist of:
+            *   `dictionary_address` (64-bit): The byte address of the matched word in the dictionary (pointed to by `dictionary_start` in the Header), or 0 if the word is not found in the dictionary.
+            *   `length_of_word` (8-bit): The number of ZSCII characters in the textual word from the input.
+            *   `start_offset_in_text_buffer` (32-bit): The byte offset of this word's first character within the `text_buffer_addr` (where the input ZSCII string is stored).
+        *   Each word entry will thus be 8 + 1 + 4 = 13 bytes. (Note: For alignment or simplicity, entries could be padded to 16 bytes in a final implementation, with the last 3 bytes reserved. This specification currently assumes unpadded 13-byte entries.)
+        *   **Dictionary Format:** The dictionary itself (pointed to by `dictionary_start` in the Header) follows Z-Spec 1.1 structure (e.g., word separator characters, entry length, number of entries, Z-encoded words), but all dictionary entry addresses are byte addresses. Word separation is done using the defined word separator characters from the dictionary header.
+    5.  PC advances past this instruction and its operands.
+*   **`Stores Result To`**: Does not directly store a result in a variable (unlike `aread`). Status of read (e.g., characters read) is in `text_buffer_addr`.
+*   **`Branches If`**: Does not branch.
+*   **`Side Effects`**: Memory at `text_buffer_addr` and `parse_buffer_addr` (if provided) is overwritten. Player I/O occurs.
+*   **`Error Conditions`**:
+    *   Invalid `text_buffer_addr` or `parse_buffer_addr`.
+    *   Buffer sizes specified in `text_buffer_addr` or `parse_buffer_addr` being too small.
+
+**Note on `aread`:** The `aread` opcode, when implemented with parsing enabled (via a non-zero `parse_buffer_addr`), uses the same `parse_buffer_addr` format as described for `sread`.
+
+### 4. Note on Completeness
+
+The opcodes listed above are examples provided to illustrate the required level of detail and format for specification. A complete Z-Machine Mark 2 implementation would necessitate defining *all* opcodes from the Z-Machine Standard 1.1 in this manner. This includes adapting them for 64-bit operations, 64-bit addresses, ensuring correct handling of Packed Addresses (PADDRs) where appropriate (especially for routine calls and string addresses), and verifying operand types. Furthermore, all new ZM2-specific opcodes, such as the full suite of LLM interaction opcodes (`start_llm_generate`, `check_llm_status`, `get_llm_result`) and any other utility or extended opcodes, must also be defined with this level of rigor.
+
+The final assignment of numerical opcode values needs to be done systematically to avoid clashes across different opcode forms (0OP, 1OP, 2OP, VAROP, EXT) and to allow for logical grouping and potential future expansion. The example values used herein are illustrative and subject to a final, comprehensive numbering scheme.
+
 ## 5. LLM Integration
 
 -   **Role of the LLM**: The LLM serves two primary functions within the Z-Machine Mark 2:
@@ -427,7 +738,7 @@ The general philosophy is to fail fast and clearly for programmer errors (invali
         *   The VM updates the internal state associated with the handle (e.g., to "Success", "Failed"). If successful, it writes the processed data to the `result_buffer_addr` specified in the `start_llm_*` call.
         *   Subsequent calls to `check_llm_status` for that handle will then return the updated status. If the status is "Success", `get_llm_result` can be called.
 
--   **Data Structures for LLM Communication**: The `start_llm_parse` and `start_llm_generate` opcodes define operands for `input_text_addr`, `context_data_addr`, and `result_buffer_addr`. The data at these addresses will typically be formatted as JSON strings, though the design allows for other structured binary formats if optimized.
+-   **Data Structures for LLM Communication**: The `start_llm_parse` and `start_llm_generate` opcodes define operands for `input_text_addr`, `context_data_addr`, and `result_buffer_addr`. The data at these addresses will typically be formatted as JSON strings, though the design allows for other structured binary formats if optimized. To ensure interoperability and simplify LLM fine-tuning, the following JSON structures are defined as the **normative standard** for communication between the Z-Machine Mark 2 VM and the LLM. While the VM's JSON parser for LLM responses should be somewhat robust to minor structural variations (e.g., extra fields returned by the LLM), the VM will always *construct* its requests to the LLM adhering to this defined structure. LLMs fine-tuned for Z-Machine Mark 2 should be trained to expect input in this format and produce output that aligns with it.
 
     *   **Sending Information to LLM (NLU - initiated by `start_llm_parse`)**:
         *   `input_text_addr`: Points to a Z-encoded string (e.g., "take the red key from the oak table"). This is converted to a plain string for the JSON payload by the VM.
@@ -457,9 +768,10 @@ The general philosophy is to fail fast and clearly for programmer errors (invali
               }
             }
             ```
+            This payload structure, particularly the content of the `inputs` field combining player command, context, and task prompt, is the standard format the VM will send for NLU requests.
 
     *   **Receiving Information from LLM (NLU - populated in `result_buffer_addr` by VM before `get_llm_result` confirms it)**:
-        *   The LLM is prompted to return a JSON structure.
+        *   The LLM is expected to return a JSON structure that corresponds to the 'Task: Parse the player's command...' part of the prompt. The standard format for this structured action, which the VM will parse from the LLM's `generated_text` field, is:
             ```json
             // Conceptual content written to result_buffer_addr by VM after successful LLM NLU task
             // This is the JSON part of the Hugging Face API response
@@ -479,6 +791,7 @@ The general philosophy is to fail fast and clearly for programmer errors (invali
             // and directly parse the meaningful JSON object from the relevant field (e.g., `generated_text`).
             // The goal is to avoid requiring Z-code to perform a second parsing step on a stringified JSON.
             ```
+            This structured action format is the standard the VM anticipates for NLU results. Game logic will rely on these field names (`action`, `noun1`, `preposition`, `noun2`, etc.) being present in the JSON stored in `result_buffer_addr`.
         *   The Z-Machine game logic then uses this structured data (e.g., verb "take", noun1 "small brass key", etc.) from `result_buffer_addr` after `get_llm_result` confirms success.
 
     *   **Sending Information to LLM (NLG - initiated by `start_llm_generate`)**:
@@ -505,6 +818,7 @@ The general philosophy is to fail fast and clearly for programmer errors (invali
               }
             }
             ```
+            This payload structure, particularly the content of the `inputs` field combining the prompt and context, is the standard format the VM will send for NLG requests.
 
     *   **Receiving Information from LLM (NLG - `result_buffer_addr`)**:
         *   The LLM returns generated text.
@@ -517,6 +831,7 @@ The general philosophy is to fail fast and clearly for programmer errors (invali
             ]
             // The VM extracts "generated_text", then converts it to Z-encoded format.
             ```
+            The VM expects the LLM's response for NLG tasks to be in this format, specifically looking for the `generated_text` field within the first element of the top-level array (as is common with Hugging Face Inference API). The VM will then extract and process this text.
 
 -   **Strategies for Fine-Tuning the LLM**:
     While pre-trained models can be powerful, fine-tuning an LLM on domain-specific data (interactive fiction commands, responses, and descriptive text) can significantly improve its performance and relevance.
@@ -674,11 +989,15 @@ The general philosophy is to fail fast and clearly for programmer errors (invali
             *   NPC dialogue.
             *   Narrative flavor text, responses to unusual actions, or creative elaborations.
         *   **Formatting and Processing (handled by VM before `get_llm_result` confirms success)**:
-            *   **Conversion to Z-Encoding and Unicode Handling**: The LLM typically returns plain text (e.g., UTF-8). The Z-Machine Mark 2's primary output mode assumes a Unicode-capable interpreter. The `print_unicode (char_code)` opcode should be used to display any character not representable in standard ZSCII. A header flag (e.g., in `flags1` or `flags2`) can be defined to indicate a 'strict ZSCII compatibility mode'. If this flag is set, the interpreter should attempt to transliterate or substitute Unicode characters to their closest ZSCII equivalents, or use a placeholder character (e.g., '?') if no suitable equivalent exists, rather than outputting them directly via a Unicode mechanism. The VM must convert the LLM's output text accordingly. This involves:
-                *   If in Unicode mode (default): Ensuring text is correctly represented for `print_unicode` or direct ZSCII for common characters.
-                *   If in strict ZSCII compatibility mode: Mapping Unicode characters to their ZSCII equivalents, or using transliteration/placeholders.
-                *   Applying Z-Machine string compression/abbreviations if the text is to be stored long-term (less common for immediate display).
-            *   **Content Moderation/Filtering**: Before making the text available via `get_llm_result`, the VM or game logic should ideally apply another layer of filtering to the LLM's output.
+            *   **Conversion to Z-Encoding and Unicode Handling**: The LLM typically returns plain text (e.g., UTF-8). The VM processes this text before Z-code can use it, especially for LLM result buffers intended for display. The exact behavior is influenced by the `StrictZSCIICompatMode` flag (Flag bit 2 in `flags1` of the header).
+                *   **If `StrictZSCIICompatMode` is OFF (0, default Unicode mode):**
+                    *   The VM converts the LLM's UTF-8 string into a sequence of 32-bit Unicode code points within the designated result buffer.
+                    *   The Z-code routine responsible for printing this buffer would then iterate through these code points, using `print_unicode(char_code)` for each character. Standard Z-Machine string opcodes (like `print`) would not be directly applicable to such a buffer of raw Unicode code points.
+                *   **If `StrictZSCIICompatMode` is ON (1):**
+                    *   The VM will convert the LLM's UTF-8 text, attempting to transliterate or substitute all characters to their closest ZSCII equivalents. For characters with no reasonable ZSCII single-character substitute, a placeholder character '?' will be used.
+                    *   The resulting text in the LLM result buffer will be a pure ZSCII string, suitable for direct use with standard Z-Machine output opcodes like `print` or `print_addr`.
+                    *   In this mode, if Z-code calls `print_unicode(char_code)` where `char_code` is outside the ZSCII range, the VM will itself attempt to print the ZSCII substitute or the '?' placeholder instead of rendering the direct Unicode character.
+            *   **Content Moderation/Filtering**: Before making the text available via `get_llm_result` (regardless of mode), the VM or game logic should ideally apply another layer of filtering to the LLM's output.
             *   **Stylistic Consistency**: The game author should prompt the LLM to maintain a consistent tone and style. The `creativity_level` parameter in `start_llm_generate` can help.
             *   **Attribution/Distinction (Optional)**: The interpreter or game could optionally prepend a subtle indicator for LLM-generated text if desired for transparency (e.g., a slightly different text color, a small icon, or a style like italics, if the output stream supports it). However, the goal is often seamless integration.
             *   **Line Wrapping and Paging**: The VM's standard output routines will handle line wrapping according to the current window width. If the LLM text is very long, the game might need to explicitly break it into manageable chunks or use "more..." prompts.
