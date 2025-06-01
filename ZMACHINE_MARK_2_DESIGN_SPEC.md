@@ -1,5 +1,3 @@
-# ZMACHINE_MARK2
-
 # Z-Machine Mark 2 Design Specification
 
 ## 1. Overview
