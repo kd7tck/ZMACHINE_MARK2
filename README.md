@@ -39,3 +39,12 @@ For generating output, the VM may similarly initiate asynchronous NLG requests t
 Once the LLM generates descriptive text, the VM retrieves it and combines it with its own direct output, presenting the full narrative to the Player.
 
 This asynchronous model is crucial for maintaining a responsive user experience despite potential LLM latency.
+
+## Repository Contents
+
+This repository contains the design specification and the Rust implementation of the Z-Machine Mark 2 Virtual Machine.
+
+*   **`ZMACHINE_MARK_2_DESIGN_SPEC.md`**: The detailed design document for the Z-Machine Mark 2.
+*   **`zm2_vm/`**: A Rust Cargo project that implements the Z-Machine Mark 2 virtual machine as a library. This crate will contain the core logic for the VM, including memory management, opcode execution, and LLM integration, as outlined in the design specification.
+
+Further details about the `zm2_vm` crate can be found within its own documentation once developed.
