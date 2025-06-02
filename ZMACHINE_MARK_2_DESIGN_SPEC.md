@@ -20,22 +20,28 @@ The Z-Machine Mark 2 comprises the following core components:
 **Interaction Flow:**
 
 *   The **Player** inputs a command through the **Player Interface**.
-*   The **VM** receives this input. Game logic, using LLM opcodes, can initiate an asynchronous request to the **LLM** for NLU, providing relevant game state information.
-*   The game can periodically check the status of this request. Once completed, the **LLM**'s parsed structured action is retrieved by the **VM**.
-*   The **VM** executes the action, updating the internal **Game State** (e.g., player location, inventory, world events).
-*   For generating output, the **VM** may use LLM opcodes to initiate asynchronous requests to the **LLM** for NLG, providing prompts or context.
+*   The **VM** receives this input. Game logic, using LLM opcodes (e.g., `start_llm_parse`), can initiate an asynchronous request to the **LLM** for NLU, providing relevant game state information. This asynchronous model is the default behavior, designed to prevent the game from freezing during LLM communication. (Alternatively, if the `ForceLLMSync` flag in the Header is set, the VM will attempt to handle these LLM calls synchronously, blocking further execution until the LLM responds; this simplifies game logic but may degrade user experience due to potential delays.)
+*   While an asynchronous LLM request is pending (i.e., before an opcode like `check_llm_status` indicates completion):
+    *   The game logic is expected to periodically call `check_llm_status` to poll the request's status.
+    *   During these polling intervals, the game can be designed by the author to:
+        *   Display a waiting indicator to the player (e.g., "Thinking...", "The air crackles with mental energy...").
+        *   Continue processing other non-blocking game events if the game architecture supports it (e.g., timed events, independent NPC actions).
+    *   If the game logic does not implement specific behaviors during the wait, the VM's default response might be to simply pause, awaiting the next `check_llm_status` call, or display a generic system-level waiting message if the interpreter supports it.
+*   Once `check_llm_status` indicates the LLM request has completed successfully, the **LLM**'s parsed structured action is retrieved by the **VM** (typically via `get_llm_result`).
+*   The **VM** executes the retrieved action, updating the internal **Game State** (e.g., player location, inventory, world events).
+*   For generating output, the **VM** may use LLM opcodes (e.g., `start_llm_generate`) to initiate asynchronous requests to the **LLM** for NLG, providing prompts or context. This follows a similar asynchronous pattern of polling via `check_llm_status` and retrieving via `get_llm_result`.
 *   Once the LLM generates descriptive text and the VM retrieves it, this text is combined with the VM's own direct output and presented to the **Player** via the **Player Interface**.
-This cycle, involving asynchronous LLM interactions, repeats, creating a continuous interactive loop.
+This cycle, involving potentially asynchronous LLM interactions, repeats, creating a continuous interactive loop.
 
 ## 2. Memory Model
 
--   **Word Size**: Each word is 64 bits (8 bytes).
--   **Address Space**: 64-bit addressing, providing 2<sup>64</sup> words of addressable memory.
+-   **Word Size**: While the architecture is 64-bit, and operations often handle 64-bit data chunks, the fundamental unit of data storage and addressing is the byte. A 'word' in the context of data manipulation typically refers to 8 bytes (64 bits).
+-   **Address Space**: 64-bit addressing, providing 2<sup>64</sup> bytes of addressable memory. Each unique address refers to a single byte.
 -   **Memory Layout**:
     -   **Header**: Contains metadata (version, release number, memory map).
     -   **Code Section**: Stores game logic routines. Instructions can span multiple 64-bit words.
     -   **Data Sections**: Includes objects, text abbreviations, and dynamic memory.
--   **Byte-Addressable**: Remains byte-addressable, with 64-bit word granularity. Each 64-bit word consists of 8 bytes. Addresses refer to individual bytes, but operations like reads and writes are typically performed on whole words.
+-   **Byte-Addressable**: The memory is byte-addressable. Addresses refer to individual bytes. Operations like reads and writes are often performed on whole words (8 bytes), but each byte has a unique address.
 
 **Visual Representation of Memory Layout:**
 
@@ -75,7 +81,7 @@ The header is a fixed-size block at the beginning of the memory (e.g., the first
 | 0              | 2            | `version`                      | Z-Machine Mark 2 version (e.g., 0x0200 for v2.0).                                                          |
 | 2              | 2            | `release_number`               | Release number of the story file.                                                                          |
 | 4              | 8            | `story_id`                     | Unique 64-bit identifier for the story.                                                                    |
-| 12             | 8            | `checksum`                     | 64-bit checksum of the story file (excluding header beyond this field) for integrity verification.         |
+| 12             | 8            | `checksum`                     | 64-bit checksum of the story file, calculated from the byte immediately following this checksum field (i.e., from offset 20) to the end of the story file, for integrity verification.         |
 | 20             | 8            | `code_section_start`           | Byte address of the start of the Code Section.                                                             |
 | 28             | 8            | `code_section_length`          | Length of the Code Section in bytes.                                                                       |
 | 36             | 8            | `static_data_section_start`    | Byte address of the start of the Static Data Section.                                                      |
@@ -89,13 +95,15 @@ The header is a fixed-size block at the beginning of the memory (e.g., the first
 | 100            | 4            | `flags1`                       | Various flags. See details below:<br>\| Bit   \| Name                     \| Description (1 = ON/Required, 0 = OFF/Optional/Default) \|<br>\|-------\|--------------------------\|-----------------------------------------------------------\|<br>\| 0     \| `Transcripting`          \| VM attempts to record player input and game output.       \|<br>\| 1     \| `FixedPitchFont`         \| Game expects a fixed-pitch font for proper layout.        \|<br>\| 2     \| `StrictZSCIICompatMode`  \| VM attempts to transliterate Unicode to ZSCII. Default: Unicode. \|<br>\| 3     \| `DebugMode`              \| VM may provide verbose errors or debug features.          \|<br>\| 4     \| `LLMParseEnable`         \| `start_llm_parse` is active. Default: ON.                 \|<br>\| 5     \| `LLMGenerateEnable`      \| `start_llm_generate` is active. Default: ON.              \|<br>\| 6     \| `DivByZeroHalt`          \| Division by zero causes VM halt. Default: Halt. (Else returns 0) \|<br>\| 7     \| `SaveLoadEnable`         \| `save` and `restore` opcodes active. Default: ON.         \|<br>\| 8-31  \| `Reserved`               \| Must be 0.                                                \| |
 | 104            | 4            | `flags2`                       | More flags. See details below:<br>\| Bit   \| Name                     \| Description (1 = ON, 0 = OFF/Default)                      \|<br>\|-------\|--------------------------\|------------------------------------------------------------\|<br>\| 0     \| `ForceLLMSync`           \| VM attempts to make LLM calls synchronous. Default: OFF.   \|<br>\| 1     \| `Enable拡張Opcodes`      \| Enables hypothetical extended, non-standard opcodes.       \|<br>\| 2     \| `BypassLLMModeration`    \| VM might bypass its own LLM content moderation. *Use with caution.* \|<br>\| 3-31  \| `Reserved`               \| Must be 0.                                                 \| |
 | 108            | 8            | `llm_api_endpoint_ptr`         | Pointer to a null-terminated string within Static Data for the LLM API endpoint. 0 if not used.            |
-| 116            | 8            | `llm_parameters_ptr`           | Pointer to a structure/string within Static Data for LLM parameters (e.g., model name). 0 if not used.<br>This pointer references a null-terminated JSON string within the Static Data Section. If this pointer is 0, the VM will use its own default LLM parameters.<br>The JSON string should contain an object with the following optional key-value pairs. If a key is omitted, the VM will use a sensible default for that parameter:<br><pre><code>{\n  "nlu_model_id": "string",     // Hugging Face model ID for Natural Language Understanding (parsing player input)\n  "nlg_model_id": "string",     // Hugging Face model ID for Natural Language Generation (descriptive text, NPC dialogue)\n  "default_nlu_temperature": "number", // 0.0 to 2.0, e.g., 0.5 (lower is more deterministic for parsing)\n  "default_nlg_temperature": "number", // 0.0 to 2.0, e.g., 0.9 (higher is more creative for generation)\n  "default_nlu_max_tokens": "integer", // Max tokens the NLU model should generate for the structured output, e.g., 100\n  "default_nlg_max_tokens": "integer", // Max tokens the NLG model should generate for descriptive text, e.g., 250\n  "api_base_url": "string"      // Optional: Override Hugging Face API base URL (e.g., for self-hosted inference endpoint)\n}</code></pre><br>**Example in Static Data:**<br><pre><code>// Somewhere in Static Data Section, pointed to by llm_parameters_ptr\nmy_llm_params:\n  DB "{",0\n  DB "  \"nlu_model_id\": \"mistralai/Mistral-7B-Instruct-v0.1\",",0\n  DB "  \"nlg_model_id\": \"gpt2\",",0\n  DB "  \"default_nlg_temperature\": 0.85,",0\n  DB "  \"default_nlg_max_tokens\": 300",0\n  DB "}",0\n  DB 0 // Null terminator for the string</code></pre><br>The VM reads this JSON string at startup. If the JSON is malformed or a parameter value is invalid, the VM should report an error or fall back to its internal defaults for the problematic parameter(s). |
+| 116            | 8            | `llm_parameters_ptr`           | Pointer to a structure/string within Static Data for LLM parameters (e.g., model name). 0 if not used.<br>This pointer references a null-terminated JSON string within the Static Data Section. If this pointer is 0, the VM will use its own default LLM parameters. Game developers should choose model IDs best suited for their game's specific Natural Language Understanding (NLU) needs (e.g., command parsing, intent recognition) and Natural Language Generation (NLG) requirements (e.g., descriptive prose, dialogue generation); any specific model IDs shown in examples are purely illustrative.<br>The JSON string should contain an object with the following optional key-value pairs. If a key is omitted, the VM will use a sensible default for that parameter:<br><pre><code>{\n  "nlu_model_id": "string",     // Hugging Face model ID for Natural Language Understanding (parsing player input)\n  "nlg_model_id": "string",     // Hugging Face model ID for Natural Language Generation (descriptive text, NPC dialogue)\n  "default_nlu_temperature": "number", // 0.0 to 2.0, e.g., 0.5 (lower is more deterministic for parsing)\n  "default_nlg_temperature": "number", // 0.0 to 2.0, e.g., 0.9 (higher is more creative for generation)\n  "default_nlu_max_tokens": "integer", // Max tokens the NLU model should generate for the structured output, e.g., 100\n  "default_nlg_max_tokens": "integer", // Max tokens the NLG model should generate for descriptive text, e.g., 250\n  "api_base_url": "string"      // Optional: Override Hugging Face API base URL (e.g., for self-hosted inference endpoint)\n}</code></pre><br>**Example in Static Data:**<br><pre><code>// Somewhere in Static Data Section, pointed to by llm_parameters_ptr\nmy_llm_params:\n  DB "{",0\n  DB "  \"nlu_model_id\": \"some-vendor/nlu-model-name-v1.0\",",0\n  DB "  \"nlg_model_id\": \"some-vendor/nlg-model-name-chat-instruct-v2.1\",",0\n  DB "  \"default_nlg_temperature\": 0.85,",0\n  DB "  \"default_nlg_max_tokens\": 300",0\n  DB "}",0\n  DB 0 // Null terminator for the string</code></pre><br>The VM reads this JSON string at startup. If the JSON is malformed or a parameter value is invalid, the VM should report an error or fall back to its internal defaults for the problematic parameter(s). |
 | 124            | 8            | `context_globals_list_ptr`     | Pointer to a null-terminated list of 1-byte global variable indices (0-239) for `get_context_as_json`. 0 if not used. |
 | 132            | 8            | `recent_events_buffer_ptr`     | Pointer to the start of a buffer for recent event strings (for `get_context_as_json`). 0 if not used.         |
 | 140            | 8            | `recent_events_count_ptr`      | Pointer to a 1-byte variable holding the count of valid event strings in `recent_events_buffer_ptr`. 0 if not used. |
 | 148            | 8            | `property_defaults_table_start`| Byte address of the property defaults table within the Static Data Section. 0 if not used or if defaults are always 0. |
 | 156            | 868          | `reserved`                     | Reserved for future expansion. Must be initialized to zero.                                                |
 | **Total Size** | **1024**     |                                |                                                                                                            |
+
+(Note: When defining data structures like the JSON for `llm_parameters_ptr` within the story file's static data, ensure valid syntax. For example, JSON does not permit trailing commas after the last element in an object or array. Malformed structures may lead to errors or default behavior by the VM.)
 
 **Code and Data Section Organization and Access:**
 
@@ -138,7 +146,7 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
 
 3.  **Static Data Section (Variable Size)**:
     *   **Content**: Contains game data that is generally fixed at compile time. This includes:
-        *   **Object Table**: Defines all game objects. The table starts at the address specified by `object_table_start` in the Header. It's an array of object entries. The total number of objects can be inferred if there's a standard object 0 or a specific field for object count, or by dividing the relevant section of static data by object entry size. Object IDs are 1-based indices into this table (Object 0 is often unused or has special meaning). Each object entry has a fixed size of 40 bytes and is structured as follows (all multi-byte values are Big Endian):
+        *   **Object Table**: Defines all game objects. The table starts at the address specified by `object_table_start` in the Header. It's an array of object entries. The total number of objects can be inferred if there's a standard object 0 or a specific field for object count, or by dividing the relevant section of static data by object entry size. Object IDs are 1-based indices into this table (Object 0 is often unused or has special meaning). Each object entry has a fixed size of 48 bytes and is structured as follows (all multi-byte values are Big Endian):
             ```
             | Offset | Size (Bytes) | Field Name             | Description                                                                 |
             |--------|--------------|------------------------|-----------------------------------------------------------------------------|
@@ -147,9 +155,10 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
             | 16     | 8            | `sibling_obj_id`       | 64-bit ID of the next sibling object. 0 if no more siblings.                |
             | 24     | 8            | `child_obj_id`         | 64-bit ID of the first child object. 0 if no children.                      |
             | 32     | 8            | `property_table_ptr`   | Absolute byte address of this object's property table. 0 if no properties.  |
+            | 40     | 8            | `short_name_ptr`       | Absolute byte address of the object's Z-encoded short name string.          |
             ```
-            Object IDs are 64-bit values. For ZM2, an object ID `N` typically refers to the Nth entry in the object table (1-indexed). So, to find object `N`, the address would be `object_table_start + ((N-1) * 40)`.
-        *   **Property Tables**: Each object can have an associated property table, pointed to by its `property_table_ptr`. A property table contains a list of properties for that object. The format of a property table begins with a 64-bit text address for the object's 'short name' (a Z-encoded string). This is followed by a sequence of individual property entries. The end of the property list is typically indicated by a property block starting with a property ID of 0.
+            Object IDs are 64-bit values. For ZM2, an object ID `N` typically refers to the Nth entry in the object table (1-indexed), effectively acting as an index. Object 0 is often unused or has special meaning. The practical number of objects will be far less than 2<sup>64</sup>. So, to find object `N`, the address would be `object_table_start + ((N-1) * 48)`.
+        *   **Property Tables**: Each object can have an associated property table, pointed to by its `property_table_ptr`. A property table contains a list of properties for that object. This is followed by a sequence of individual property entries. The end of the property list is typically indicated by a property block starting with a property ID of 0.
             Each individual property entry is structured as follows:
             ```
             | Size (Bytes)         | Field Name      | Description                                                                      |
@@ -166,10 +175,9 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
                     *   If 0: Length of data is 1 byte. Property data (1 byte) follows. Total: 2 bytes (byte1 + data).
                     *   If 1: A second byte follows Byte 1.
             *   Byte 2 (only if Bit 7 of Byte 1 is 1):
-                *   Bits 0-7: Length of data `L` (1-255 bytes). Property data (`L` bytes) follows. Total: 2 + `L` bytes.
-                *   (Note: A length of 0 in Byte 2 is invalid. Lengths from this byte are 1-255).
+                *   Bits 0-7: Length of data `L` (0-255 bytes). Property data (`L` bytes) follows. Total: 2 + `L` bytes.
+                *   (Note: A length of 0 in Byte 2 indicates the property is present but has no associated data (e.g., a boolean flag). Lengths otherwise range from 1-255 bytes).
             *   Property data is always byte-aligned. Property values are interpreted according to game logic (e.g., as numbers, pointers, or Z-encoded strings).
-            *   Default properties are not explicitly handled by this format; all properties for an object must be listed if this structure is used.
         *   **Global Variables Initial Values Table**: A table holding the initial 64-bit values for all 240 global variables. These are copied to the dynamic memory area for global variables upon game initialization.
         *   **Dictionary**: A list of ZSCII-encoded words recognized by the traditional parser (if used as a fallback). Each word is typically fixed-length, padded with nulls. Associated with data like word ID or pointers to grammar tokens.
         *   **Text Abbreviation Table**: A table of pointers to frequently used Z-encoded strings. Used by `print_abbrev` opcode.
@@ -197,7 +205,20 @@ A Z-Machine Mark 2 story file (typically with a `.zm2` or `.z64` extension) is a
 *   **Characters (NPCs)**: Also represented as **Objects**. NPC-specific logic is handled by routines in the Code Section. Dialogue might be stored as Z-encoded strings, selected by game logic, or generated via LLM generation opcodes using prompts stored as strings in the Static Data section. NPC state (e.g., mood, knowledge) is stored in its object properties or related global variables.
 *   **Game Logic (Puzzles, Rules, Event Handling)**: Encoded as routines (functions) in the **Code Section**. These routines manipulate game state (variables, object properties/locations) and interact with the player via I/O opcodes or the asynchronous LLM interaction model.
     *   Example: A puzzle might involve checking if the player has a specific object (`get_parent`) and is in a specific room (global variable for player location), then changing a property on another object (`put_prop`) to signify the puzzle is solved.
-*   **Text**: All printable text is stored as Z-encoded strings (see Z-Machine Standard 1.1, Appendix C for ZSCII and string encoding details, adapted for potential Unicode characters via `print_unicode`). Abbreviations are used to save space. This adaptation means that standard Z-Machine text processing opcodes (e.g., `print`, `print_addr`) primarily handle ZSCII characters and Z-encoded abbreviations. For characters outside the ZSCII set, the `print_unicode (char_code)` opcode must be used. Story file text intended for direct printing via standard opcodes should primarily use ZSCII and Z-encoding. Text requiring broader Unicode support will typically be constructed or processed at runtime and printed character by character using `print_unicode` if necessary. Text generated by LLMs, which is typically UTF-8, will be processed by the VM before being made available to Z-code. This involves converting it into a sequence of ZSCII characters (for direct use with `print` opcodes if possible) and/or Unicode character codes (for use with `print_unicode`). See Section 7 (Player Interaction), subsection "Output Formatting and Presentation" for details on runtime handling.
+*   **Text**:
+    *   **Primary Encoding (UTF-8)**: For general-purpose text, especially text intended for LLM interaction or display using Unicode-aware opcodes like `print_unicode_string` (name TBD, see Section 4), **UTF-8 is the primary and recommended encoding**.
+        *   **Null-Termination**: UTF-8 encoded strings stored in memory are typically **null-terminated** (i.e., end with a byte of value 0x00). This is the default convention unless a specific data structure or opcode explicitly defines a length-prefixed mechanism.
+        *   **Length**: The length of a null-terminated UTF-8 string is determined by the number of bytes until the null terminator. The number of characters may differ from the byte length due to UTF-8's variable-width nature.
+    *   **ZSCII and Z-Encoding (Legacy/Compatibility)**:
+        *   Traditional Z-Machine opcodes like `print` (prints string at PC), `print_addr` (prints string at given address), and `print_obj` (prints object short name from object table via `short_name_ptr`) operate on Z-encoded strings, which use ZSCII characters and abbreviation mechanisms as defined in the Z-Machine Standard 1.1. These are compact but limited in character set.
+        *   Story file text intended for these opcodes (e.g., object short names, some static messages) should still use Z-encoding.
+    *   **Interaction with `print_unicode_string` vs. `print`**:
+        *   `print_unicode_string` (or similar name, see Section 4) is designed to take a memory address pointing to a null-terminated UTF-8 string and render it.
+        *   Standard `print` and `print_addr` opcodes will continue to interpret data as Z-encoded ZSCII strings.
+    *   **`StrictZSCIICompatMode` Flag**:
+        *   If `StrictZSCIICompatMode` (Header `flags1`, bit 2) is OFF (default): The `print_unicode_string` opcode will directly attempt to render UTF-8. Text from LLMs, typically UTF-8, can be stored and printed by `print_unicode_string` directly after any necessary validation by game logic.
+        *   If `StrictZSCIICompatMode` is ON: The behavior of `print_unicode_string` might be to attempt transliteration of its UTF-8 input to ZSCII (printing '?' for unmappable characters). LLM-generated text, even if originally UTF-8, would ideally be pre-processed by the VM into ZSCII (as mentioned in Section 7) if it's intended to be printed by ZSCII-only opcodes.
+    *   **LLM Text Handling**: As detailed in Section 7 ("Output Formatting and Presentation"), text from LLMs (typically UTF-8) is processed by the VM. If `StrictZSCIICompatMode` is OFF, this processed text can be directly used by UTF-8 aware printing opcodes. If ON, the VM attempts ZSCII conversion.
 
 The story file is essentially a serialized form of the static parts of the Z-Machine's memory, plus the executable code. The VM reads this file to populate its memory and then begins execution. The Dynamic Data Section in memory is where the live game state evolves from the initial state defined in the Static Data.
 
@@ -267,8 +288,8 @@ This list provides a few examples of standard opcodes adapted for ZM2, reflectin
 *   **VAROP (Variable Number of Operands):** Example Range `0x0300 - 0x03FF`
     *   `call` (`0x0300`): Calls a routine. `routine_paddr` is a packed address.
     *   `store` (`0x0301`): Stores value in variable (ZM2 version).
-    *   `print_unicode` (`0x0302`): Prints a Unicode character.
-    *   `check_unicode` (`0x0303`): Checks if current output stream supports the Unicode character.
+    *   `print_utf8_string` (`0x0302`): Prints a null-terminated UTF-8 string.
+    *   `check_unicode_char` (`0x0303`): Checks if current output stream supports a given Unicode character code.
     *   `sread` (`0x0304`): Reads player input.
 
 *   **EXT (Extended for ZM2):** Example Range `0xEE00 - 0xEFFF`
@@ -2462,46 +2483,47 @@ This standardized format ensures all branching opcodes behave consistently regar
 *   **`Side Effects`**: None.
 *   **`Error Conditions`**: Invalid types/var refs. Invalid table address or form.
 
-#### bx. `print_unicode` (VAROP)
+#### bx. `print_utf8_string` (VAROP)
 
-*   **`Mnemonic`**: `print_unicode`
-*   **`Opcode Value`**: `0x0317`
+*   **`Mnemonic`**: `print_utf8_string`
+*   **`Opcode Value`**: `0x0302`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
-    *   `type_byte (Operand Type Specifier)`: For `unicode_char_code`.
-    *   `unicode_char_code (LC/SC/VAR)`: The 32-bit Unicode code point to print.
-*   **`Description`**: Prints a Unicode character.
+    *   `type_byte_addr (Operand Type Specifier)`: For `text_address`.
+    *   `text_address (LC/VAR Address)`: The byte address of a null-terminated UTF-8 encoded string.
+*   **`Description`**: Prints the null-terminated UTF-8 encoded string at `text_address`.
 *   **`Operation Details`**:
-    1.  Read `type_byte`, then `unicode_char_code`. Fetch/extend.
-    2.  The VM attempts to print the character corresponding to `unicode_char_code`.
-    3.  If `StrictZSCIICompatMode` is ON, VM attempts to transliterate to ZSCII or print '?'.
-    4.  If the character cannot be printed, '?' is typically output.
+    1.  Read `type_byte_addr`, then `text_address`. Fetch if VAR.
+    2.  Validate `text_address` (must be within valid readable memory).
+    3.  The VM reads bytes from `text_address` and decodes them as a UTF-8 string. Printing stops when a null terminator (0x00) is encountered.
+    4.  If `StrictZSCIICompatMode` (Header `flags1`, bit 2) is ON: The VM attempts to transliterate each Unicode character from the UTF-8 string to its closest ZSCII equivalent. If a character cannot be reasonably transliterated, a '?' (ZSCII 63) is printed instead.
+    5.  If `StrictZSCIICompatMode` is OFF (default): The VM sends the Unicode characters to the interpreter for rendering. The interpreter is responsible for handling the display of available Unicode characters; unsupported characters may be displayed as '?' or a similar substitution glyph by the terminal/font.
 *   **`Stores Result To`**: None.
 *   **`Branches If`**: None.
-*   **`Side Effects`**: Character printed.
-*   **`Error Conditions`**: Invalid type/var ref. I/O error.
+*   **`Side Effects`**: Text is printed to the current output stream.
+*   **`Error Conditions`**: Invalid `type_byte_addr`. `text_address` is invalid or points to unreadable/non-string data. I/O error on the output stream. Malformed UTF-8 sequence encountered (VM may print a substitution character or halt with an error).
 
-#### by. `check_unicode` (VAROP)
+#### by. `check_unicode_char` (VAROP)
 
-*   **`Mnemonic`**: `check_unicode`
-*   **`Opcode Value`**: `0x0318`
+*   **`Mnemonic`**: `check_unicode_char`
+*   **`Opcode Value`**: `0x0303`
 *   **`Form`**: `VAROP`
 *   **`Operand Types`**:
-    *   `type_byte (Operand Type Specifier)`: For `unicode_char_code`.
+    *   `type_byte_char (Operand Type Specifier)`: For `unicode_char_code`.
     *   `unicode_char_code (LC/SC/VAR)`: The 32-bit Unicode code point to check.
     *   `store_variable_ref (Variable Reference)`: Stores result.
-*   **`Description`**: Checks if the current output stream(s) can print the given Unicode character.
+*   **`Description`**: Checks if the current output stream(s) can print the given single Unicode character code point.
 *   **`Operation Details`**:
-    1.  Read `type_byte`, then `unicode_char_code`. Fetch/extend.
-    2.  Result:
-        *   1: Character can be printed accurately.
-        *   0: Cannot be printed (will be substituted, e.g., with '?').
-        *   2: Can be approximated/transliterated.
-    3.  Store result in `store_variable_ref`.
+    1.  Read `type_byte_char`, then `unicode_char_code`. Fetch/extend.
+    2.  Result stored in `store_variable_ref`:
+        *   `1`: Character can be printed accurately by the current output stream/display.
+        *   `0`: Character cannot be printed (will likely be substituted, e.g., with '?').
+        *   `2`: Character can be approximated or transliterated to a ZSCII character (relevant if `StrictZSCIICompatMode` is ON or if the game wants to know about ZSCII fallbacks).
+    3.  The primary check (for result 1) is about direct rendering capability.
 *   **`Stores Result To`**: `store_variable_ref`.
 *   **`Branches If`**: None.
 *   **`Side Effects`**: None.
-*   **`Error Conditions`**: Invalid type/var ref.
+*   **`Error Conditions`**: Invalid `type_byte_char` or `store_variable_ref`.
 
 #### bz. `store` (VAROP)
 
