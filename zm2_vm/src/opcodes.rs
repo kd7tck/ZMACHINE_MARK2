@@ -25,7 +25,7 @@ pub const OP_JUMP: u64 = 0x010B;
 pub const OP_CALL: u64 = 0x0300;
 pub const OP_PUSH: u64 = 0x0308;
 pub const OP_PULL: u64 = 0x0309;
-pub const OP_STORE: u64 = 0x0319; // ZM2 VAROP list
+pub const OP_STORE: u64 = 0x0301; // ZM2 VAROP list, corrected from 0x0319
 
 // 1OP Opcodes (continued)
 pub const OP_LOAD: u64 = 0x010D;

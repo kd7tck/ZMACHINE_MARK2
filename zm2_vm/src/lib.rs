@@ -14,15 +14,6 @@ use std::io::Cursor;
 use std::fs::File;
 use std::io::Read;
 
-
-// --- Opcode Enum (Old, for reference, might be removed later if not used by old methods) ---
-#[derive(Debug, PartialEq)]
-pub enum Opcode {
-    Nop,
-    Unknown(u64),
-}
-pub const NOP_OPCODE_VALUE: u64 = opcodes::OP_NOP;
-
 // --- Core Data Structures ---
 
 #[derive(Debug, PartialEq)]
@@ -292,7 +283,8 @@ impl VirtualMachine {
                 self.push_stack(num_locals_from_routine as u64).map_err(|e| format!("CALL: Push num_locals_count: {:?}",e))?;
                 self.cpu.fp = self.cpu.sp;
 
-                self.cpu.pc = target_addr + Self::OPCODE_SIZE;
+                // Spec: PC is set to target routine address, immediately after the byte specifying number of locals.
+                self.cpu.pc = target_addr + 1;
                 for _ in 0..num_locals_from_routine {
                     self.push_stack(0).map_err(|e| format!("CALL: Push initial local value: {:?}",e))?;
                 }
@@ -352,20 +344,10 @@ impl VirtualMachine {
                     self.running = false;
                     return Err(format!("MemoryError::InternalError: {} at PC={:#010x}", s, current_pc_before_fetch));
                 }
-                // StackOverflow and StackUnderflow are now caught by CpuStackError
-                // Err(MemoryError::StackOverflow) => { ... }
-                // Err(MemoryError::StackUnderflow) => { ... }
             }
         }
         Ok(())
     }
-
-    // --- Old methods ---
-    pub fn old_load_header(&mut self, _story_data: &[u8]) -> Result<(), String> { Err("deprecated".to_string()) }
-    pub fn old_load_story(&mut self, _story_data: &[u8]) -> Result<(), String> { Err("deprecated".to_string()) }
-    pub fn old_fetch_opcode_decoded(&self) -> Result<Opcode, String> { Err("deprecated".to_string()) }
-    pub fn old_execute_opcode_decoded(&mut self, _opcode: Opcode) -> Result<(), String> { Err("deprecated".to_string()) }
-    pub fn old_run_cycle_decoded(&mut self) -> Result<(), String> { Err("deprecated".to_string()) }
 }
 
 // --- Tests ---
@@ -377,19 +359,7 @@ mod tests {
     use std::io::Write;
     use crate::header::create_dummy_header_bytes;
 
-    #[test]
-    fn vm_instantiation_new_is_gone() { }
-
-    #[test]
-    fn header_default_values() {
-        assert_eq!(1,1);
-    }
-
-    #[test]
-    fn header_field_assignment() {
-        assert_eq!(1,1);
-    }
-
+    // Helper function to create story file bytes for testing
     fn create_test_story_file_bytes(
         version: u16, code_start: u64, code_len: u64,
         static_start: u64, static_len: u64,
@@ -452,7 +422,25 @@ mod tests {
     }
 
     #[test]
-    fn test_load_story_valid_minimal() { /* ... */ }
+    fn test_load_story_valid_minimal() {
+        let code_start = 1024;
+        let code_len = 0; // No actual opcodes needed for this test
+        let story_bytes = create_test_story_file_bytes(
+            memory::SUPPORTED_VERSION,
+            code_start, code_len,
+            code_start + code_len, 0, // static
+            code_start + code_len, 256, // dynamic (needs some space for stack)
+            None
+        );
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&story_bytes).unwrap();
+        let result = VirtualMachine::load_story(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok(), "Failed to load minimal valid story: {:?}", result.err());
+        if let Ok(vm) = result {
+            assert_eq!(vm.cpu.pc, vm.memory.header().code_section_start); // PC should be at start of code
+        }
+    }
+
     #[test]
     fn test_load_story_file_too_small() {
         let story_data = vec![0u8; 512];
@@ -472,17 +460,79 @@ mod tests {
             assert!(s.contains("Unsupported Z-machine version"));
         }
     }
-    #[test]
-    fn test_op_nop_quit() { /* ... */ }
-    #[test]
-    fn test_op_quit_immediate() { /* ... */ }
-    #[test]
-    fn test_op_quit_after_nop() { /* ... */ }
-    #[test]
-    fn test_unknown_opcode() { /* ... */ }
 
     #[test]
-    fn test_stack_operations() { /* ... */ }
+    fn test_op_quit_immediate() {
+        let code_start = 1024;
+        let opcodes_to_run = [opcodes::OP_QUIT];
+        let story_bytes = create_test_story_file_bytes(
+            memory::SUPPORTED_VERSION,
+            code_start, opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, // code_len
+            code_start + opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, 0, // static
+            code_start + opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, 256, // dynamic
+            Some(&opcodes_to_run)
+        );
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&story_bytes).unwrap();
+        let mut vm = VirtualMachine::load_story(temp_file.path().to_str().unwrap()).unwrap();
+
+        let initial_pc = vm.cpu.pc;
+        let run_result = vm.run();
+        assert!(run_result.is_ok());
+        assert!(!vm.running);
+        assert_eq!(vm.cpu.pc, initial_pc + VirtualMachine::OPCODE_SIZE); // PC advanced past QUIT
+    }
+
+    #[test]
+    fn test_op_nop_quit() {
+        let code_start = 1024;
+        let opcodes_to_run = [opcodes::OP_NOP, opcodes::OP_QUIT];
+        let story_bytes = create_test_story_file_bytes(
+            memory::SUPPORTED_VERSION,
+            code_start, opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE,
+            code_start + opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, 0,
+            code_start + opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, 256,
+            Some(&opcodes_to_run)
+        );
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&story_bytes).unwrap();
+        let mut vm = VirtualMachine::load_story(temp_file.path().to_str().unwrap()).unwrap();
+
+        let initial_pc = vm.cpu.pc;
+        let run_result = vm.run();
+        assert!(run_result.is_ok());
+        assert!(!vm.running);
+        assert_eq!(vm.cpu.pc, initial_pc + 2 * VirtualMachine::OPCODE_SIZE); // PC advanced past NOP and QUIT
+    }
+
+    #[test]
+    fn test_unknown_opcode() {
+        let code_start = 1024;
+        let unknown_opcode_val = 0xFFFFFFFFFFFFFFFF; // An unlikely valid opcode
+        let opcodes_to_run = [unknown_opcode_val];
+        let story_bytes = create_test_story_file_bytes(
+            memory::SUPPORTED_VERSION,
+            code_start, opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE,
+            code_start + opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, 0,
+            code_start + opcodes_to_run.len() as u64 * VirtualMachine::OPCODE_SIZE, 256,
+            Some(&opcodes_to_run)
+        );
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&story_bytes).unwrap();
+        let mut vm = VirtualMachine::load_story(temp_file.path().to_str().unwrap()).unwrap();
+
+        let run_result = vm.run();
+        assert!(run_result.is_err());
+        if let Err(e) = run_result {
+            assert!(e.contains("Unknown opcode"));
+        }
+        assert!(!vm.running);
+    }
+
+    // test_stack_operations was a placeholder, removing.
 
     #[test]
     fn test_op_push_pull() {
@@ -548,7 +598,61 @@ mod tests {
     }
 
     #[test]
-    fn test_op_jump() { /* ... */ }
+    fn test_op_jump() {
+        let code_start = 1024;
+        let op_size = VirtualMachine::OPCODE_SIZE;
+
+        // Target for jump: after the JUMP instruction and its operands, then a NOP, then QUIT
+        // JUMP opcode (8 bytes) + offset (2 bytes) = 10 bytes. Padded to op_size (8, assuming op_size is 8).
+        // Let's make JUMP block 16 bytes to be safe with padding.
+        // JUMP -> NOP -> QUIT
+        // Offset for JUMP will be to NOP. NOP is at PC + 16 (JUMP block).
+        // JUMP operands take 2 bytes. PC after fetch is JUMP_ADDR + 8. Operands start there.
+        // Offset = (Addr of NOP) - (Addr of JUMP + 8 + 2)
+        // Addr of NOP = code_start + 16
+        // Addr of JUMP + 8 + 2 = code_start + 10
+        // Offset = (code_start + 16) - (code_start + 10) = 6
+        // This offset is relative to PC *after* reading the offset.
+
+        let jump_offset: i16 = 6; // Jump from after JUMP's own operands to NOP
+
+        let mut instruction_stream = Vec::new();
+        // JUMP Opcode Block
+        instruction_stream.extend_from_slice(&opcodes::OP_JUMP.to_be_bytes()); // 8 bytes
+        instruction_stream.extend_from_slice(&jump_offset.to_be_bytes());    // 2 bytes for offset
+        while instruction_stream.len() % op_size as usize != 0 { instruction_stream.push(0); } // Pad to op_size
+
+        // Target of Jump: NOP
+        let nop_pc_offset = instruction_stream.len() as u64;
+        instruction_stream.extend_from_slice(&opcodes::OP_NOP.to_be_bytes());    // 8 bytes
+
+        // After NOP: QUIT
+        let quit_pc_offset = instruction_stream.len() as u64;
+        instruction_stream.extend_from_slice(&opcodes::OP_QUIT.to_be_bytes());   // 8 bytes
+
+        let actual_code_len = instruction_stream.len() as u64;
+
+        let story_bytes = create_test_story_file_bytes(
+            memory::SUPPORTED_VERSION,
+            code_start, actual_code_len,
+            code_start + actual_code_len, 0,
+            code_start + actual_code_len, 256, // dynamic for stack
+            None // Manual embedding below
+        );
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let mut mutable_story_bytes = story_bytes.clone(); // Clone to make it mutable
+        mutable_story_bytes[code_start as usize..(code_start + actual_code_len) as usize].copy_from_slice(&instruction_stream);
+        temp_file.write_all(&mutable_story_bytes).unwrap();
+
+        let mut vm = VirtualMachine::load_story(temp_file.path().to_str().unwrap()).unwrap();
+        let run_result = vm.run();
+
+        assert!(run_result.is_ok(), "VM run failed: {:?}", run_result.err());
+        assert!(!vm.running, "VM should have quit");
+        // Expected PC: after the NOP (jump target) and the QUIT
+        assert_eq!(vm.cpu.pc, code_start + quit_pc_offset + op_size, "PC not after QUIT following JUMP and NOP");
+    }
 
     #[test]
     fn test_op_call_ret_simple() {
@@ -625,5 +729,87 @@ mod tests {
     }
 
     #[test]
-    fn test_op_rtrue_rfalse() { /* Same as before, but uses corrected RTRUE/RFALSE logic */ }
+    fn test_op_rtrue_rfalse() {
+        let op_size = VirtualMachine::OPCODE_SIZE;
+        let code_start = 1024u64;
+
+        // Routine 1: RTRUE
+        let mut rtrue_routine_bytes: Vec<u8> = Vec::new();
+        rtrue_routine_bytes.push(0); // 0 locals
+        while rtrue_routine_bytes.len() < op_size as usize { rtrue_routine_bytes.push(0); } // Pad num_locals byte to opcode size
+        rtrue_routine_bytes.extend_from_slice(&opcodes::OP_RTRUE.to_be_bytes()); // RTRUE opcode
+
+        // Routine 2: RFALSE
+        let mut rfalse_routine_bytes: Vec<u8> = Vec::new();
+        rfalse_routine_bytes.push(0); // 0 locals
+        while rfalse_routine_bytes.len() < op_size as usize { rfalse_routine_bytes.push(0); } // Pad
+        rfalse_routine_bytes.extend_from_slice(&opcodes::OP_RFALSE.to_be_bytes()); // RFALSE opcode
+
+        let rtrue_routine_start_offset = op_size * 2; // After CALL to RTRUE and CALL to RFALSE in main
+        let rfalse_routine_start_offset = rtrue_routine_start_offset + rtrue_routine_bytes.len() as u64;
+
+        // Main code stream
+        let mut main_code_stream: Vec<u8> = Vec::new();
+        // CALL RTRUE, store result to stack
+        main_code_stream.extend_from_slice(&opcodes::OP_CALL.to_be_bytes());
+        main_code_stream.push(0x03); // PADDR type for routine address
+        main_code_stream.extend_from_slice(&(rtrue_routine_start_offset as u32).to_be_bytes()); // PADDR value
+        main_code_stream.push(0x00); // Store result to stack
+        while main_code_stream.len() % op_size as usize != 0 { main_code_stream.push(0); } // Pad CALL block
+
+        // CALL RFALSE, store result to stack
+        main_code_stream.extend_from_slice(&opcodes::OP_CALL.to_be_bytes());
+        main_code_stream.push(0x03); // PADDR type
+        main_code_stream.extend_from_slice(&(rfalse_routine_start_offset as u32).to_be_bytes()); // PADDR value
+        main_code_stream.push(0x00); // Store result to stack
+        while main_code_stream.len() % op_size as usize != 0 { main_code_stream.push(0); } // Pad CALL block
+
+        let call_rtrue_block_len = op_size * 2; // Padded call
+        let call_rfalse_block_len = op_size * 2; // Padded call
+
+        // QUIT
+        main_code_stream.extend_from_slice(&opcodes::OP_QUIT.to_be_bytes());
+
+        let mut full_code_section_bytes = main_code_stream;
+        full_code_section_bytes.extend_from_slice(&rtrue_routine_bytes);
+        full_code_section_bytes.extend_from_slice(&rfalse_routine_bytes);
+
+        let total_code_len = full_code_section_bytes.len() as u64;
+
+        let mut story_bytes = create_test_story_file_bytes(
+            memory::SUPPORTED_VERSION,
+            code_start, total_code_len,
+            code_start + total_code_len, 0, // static
+            code_start + total_code_len, 256, // dynamic for stack
+            None // Manual embedding
+        );
+        story_bytes[code_start as usize .. (code_start + total_code_len) as usize]
+            .copy_from_slice(&full_code_section_bytes);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&story_bytes).unwrap();
+        let mut vm = VirtualMachine::load_story(temp_file.path().to_str().unwrap()).unwrap();
+
+        let initial_sp = vm.cpu.sp;
+        let run_result = vm.run();
+
+        assert!(run_result.is_ok(), "VM run failed: {:?}", run_result.err());
+        assert!(!vm.running, "VM should have quit");
+
+        // PC should be after the two CALL blocks and the QUIT block
+        let expected_pc = code_start + call_rtrue_block_len + call_rfalse_block_len + op_size;
+        assert_eq!(vm.cpu.pc, expected_pc, "PC not after QUIT");
+
+        // Check stack for results (RFALSE result, then RTRUE result)
+        // RFALSE was called second, its result (0) should be on top if stack grows down.
+        // RTRUE was called first, its result (1) should be below RFALSE's result.
+        // SP currently points to the last pushed item (0 from RFALSE).
+        // After two calls storing results to the stack, SP should be initial_sp - 16.
+        assert_eq!(vm.cpu.sp, initial_sp - 16, "SP not reflecting two values pushed for two CALLs storing to stack");
+        let rfalse_ret_val = vm.read_qword(vm.cpu.sp).unwrap(); // RFALSE result is on top
+        assert_eq!(rfalse_ret_val, 0, "Return value from RFALSE was not 0");
+
+        let rtrue_ret_val = vm.read_qword(vm.cpu.sp + 8).unwrap(); // RTRUE result is below RFALSE result
+        assert_eq!(rtrue_ret_val, 1, "Return value from RTRUE was not 1");
+    }
 }
